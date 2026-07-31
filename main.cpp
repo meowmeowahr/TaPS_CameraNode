@@ -130,11 +130,8 @@ int main(const int argc, char *argv[]) {
             std::lock_guard lock(bufferMutex);
             if (flags.bufferMaxSize == 0 || frameBuffer.size() < flags.bufferMaxSize) {
                 frameBuffer.push_back(frame);
-                if (frameBuffer.size() == 1) {
-                    spdlog::debug("First frame added to buffer");
-                }
             } else {
-                spdlog::warn("Buffer full, dropping frame #{}", frame_count);
+                spdlog::warn("buffer full, dropping frame #{}", frame_count);
             }
         }
 
@@ -153,6 +150,7 @@ int main(const int argc, char *argv[]) {
                 spdlog::info(
                     "rolling avg fps of last {} frames: {:.2f}fps",
                     flags.rollingFpsFrameCount, rate);
+                spdlog::info("buffer health: {}/{}", frameBuffer.size(), flags.bufferMaxSize);
             }
 
             delta_times.erase(delta_times.begin());
