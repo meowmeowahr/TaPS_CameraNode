@@ -13,6 +13,7 @@ struct RuntimeArgs {
     unsigned long fourcc = 0x47504a4d; // MJPG
     unsigned short rollingFpsFrameCount = 100;
     unsigned short fpsReportingInterval = 100;
+    unsigned long bufferMaxSize = 0; // 0 means unlimited
 };
 
 #endif //TAPS_CAMERANODE_RUNTIME_ARGS_H

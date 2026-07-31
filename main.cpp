@@ -5,6 +5,8 @@
 #include <spdlog/spdlog.h>
 
 #include <args.hxx>
+#include <mutex>
+#include <vector>
 
 #include "camera_enumeration.h"
 #include "cv_cap.h"
@@ -21,7 +23,8 @@ int main(const int argc, char *argv[]) {
     args::ArgumentParser parser("Camera Node for FRC Tracking and Playback System");
     args::HelpFlag help(parser, "help", "Display this help menu", {'?', "help"});
 
-    args::Flag enumerateOnly(parser, "enumerate", "Enumerate supported V4L2 camera modes, and exit", {"enum", "enumerate"});
+    args::Flag enumerateOnly(parser, "enumerate", "Enumerate supported V4L2 camera modes, and exit",
+                             {"enum", "enumerate"});
     args::Flag verboseFlag(parser, "verbose", "Enable verbose logging (debug level)", {'v', "verbose"});
     args::Flag traceFlag(parser, "trace", "Enable trace logging (highest detail)", {'t', "trace"});
 
@@ -29,10 +32,17 @@ int main(const int argc, char *argv[]) {
     args::ValueFlag fpsFlag(parser, "fps", "Target frame rate", {'f', "fps"}, flags.fps);
     args::ValueFlag widthFlag(parser, "width", "Target frame width", {'w', "width"}, flags.width);
     args::ValueFlag heightFlag(parser, "height", "Target frame height", {'h', "height"}, flags.height);
-    args::ValueFlag fourccFlag(parser, "fourcc", "Target FourCC string", {'F', "fourcc"}, fourcc_to_string(flags.fourcc));
+    args::ValueFlag fourccFlag(parser, "fourcc", "Target FourCC string", {'F', "fourcc"},
+                               fourcc_to_string(flags.fourcc));
 
-    args::ValueFlag rollingFpsFrameCountFlag(parser, "frames", "Frame count for fps averaging", {"rolling-fps-frames"}, flags.rollingFpsFrameCount);
-    args::ValueFlag fpsReportingIntervalFlag(parser, "frames", "How often to report FPS, 0 to disable", {"fps-interval"}, flags.fpsReportingInterval);
+    args::ValueFlag rollingFpsFrameCountFlag(parser, "frames", "Frame count for fps averaging", {"rolling-fps-frames"},
+                                             flags.rollingFpsFrameCount);
+    args::ValueFlag fpsReportingIntervalFlag(parser, "frames", "How often to report FPS, 0 to disable",
+                                             {"fps-interval"}, flags.fpsReportingInterval);
+
+    // New flags for buffer
+    args::ValueFlag bufferMaxSizeFlag(parser, "buffer-max-size", "Maximum number of frames to buffer (0 for unlimited)",
+                                      {"buffer-max-size"}, flags.bufferMaxSize);
 
     args::CompletionFlag completion(parser, {"complete"});
 
@@ -65,6 +75,7 @@ int main(const int argc, char *argv[]) {
     flags.fourcc = string_to_fourcc(args::get(fourccFlag));
     flags.rollingFpsFrameCount = args::get(rollingFpsFrameCountFlag);
     flags.fpsReportingInterval = args::get(fpsReportingIntervalFlag);
+    flags.bufferMaxSize = args::get(bufferMaxSizeFlag);
 
     if (enumerateOnly) {
         enumerate_camera_modes(flags.cameraId);
@@ -77,6 +88,10 @@ int main(const int argc, char *argv[]) {
     Mat frame;
     VideoCapture cap;
     cv_cap_setup(&cap, flags);
+
+    // Thread-safe buffer for frames
+    std::vector<Mat> frameBuffer;
+    std::mutex bufferMutex;
 
     vector<double> delta_times;
     delta_times.reserve(flags.rollingFpsFrameCount);
@@ -93,6 +108,12 @@ int main(const int argc, char *argv[]) {
             break;
         }
 
+        if (frame.rows != flags.height || frame.cols != flags.width) {
+            spdlog::critical("frame size from camera {}x{} != expected {}x{}", frame.cols, frame.rows, flags.width,
+                             flags.height);
+            return 1;
+        }
+
         auto end_time = chrono::high_resolution_clock::now();
 
         chrono::duration<double, milli> elapsed =
@@ -104,6 +125,18 @@ int main(const int argc, char *argv[]) {
 
         delta_times.push_back(delta_ms);
         frame_count++;
+
+        {
+            std::lock_guard lock(bufferMutex);
+            if (flags.bufferMaxSize == 0 || frameBuffer.size() < flags.bufferMaxSize) {
+                frameBuffer.push_back(frame);
+                if (frameBuffer.size() == 1) {
+                    spdlog::debug("First frame added to buffer");
+                }
+            } else {
+                spdlog::warn("Buffer full, dropping frame #{}", frame_count);
+            }
+        }
 
         if (frame_count >= flags.rollingFpsFrameCount) {
             double sum_dt = 0.0;
