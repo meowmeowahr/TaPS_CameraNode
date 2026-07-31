@@ -12,9 +12,9 @@ static std::string fourcc_to_string(const unsigned long fourcc) {
     std::string result(4, ' ');
 
     result[0] = static_cast<char>(fourcc & 0xff);
-    result[1] = static_cast<char>((fourcc >> 8) & 0xff);
-    result[2] = static_cast<char>((fourcc >> 16) & 0xff);
-    result[3] = static_cast<char>((fourcc >> 24) & 0xff);
+    result[1] = static_cast<char>(fourcc >> 8 & 0xff);
+    result[2] = static_cast<char>(fourcc >> 16 & 0xff);
+    result[3] = static_cast<char>(fourcc >> 24 & 0xff);
 
     return result;
 }

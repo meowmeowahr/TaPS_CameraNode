@@ -1,10 +1,14 @@
 #include <chrono>
+#include <csignal>
 
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
 #include <spdlog/spdlog.h>
 
 #include <args.hxx>
+#include <deque>
+#include <fstream>
+#include <iomanip>
 #include <mutex>
 #include <vector>
 
@@ -13,9 +17,61 @@
 #include "cv_logger.h"
 #include "fourcc.h"
 #include "runtime_args.h"
+#include "video_queue.h"
 
 using namespace cv;
 using namespace std;
+
+struct TimestampedFrame {
+    cv::Mat frame;
+    std::chrono::nanoseconds ptpTimestamp; // PTP/System clock timestamp
+};
+static VideoBuffer<TimestampedFrame>* g_frameBuffer = nullptr;
+static std::thread* g_recorderThread = nullptr;
+
+void recorder(VideoBuffer<TimestampedFrame>& buffer,
+              const std::string& outputFile,
+              int width, int height, double targetFps)
+{
+    spdlog::info("Start recorder thread targeting {}", outputFile);
+
+    int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+    VideoWriter writer(outputFile, cv::CAP_FFMPEG, fourcc, targetFps, cv::Size(width, height));
+
+    if (!writer.isOpened()) {
+        spdlog::error("Failed to open MKV VideoWriter for path: {}", outputFile);
+        return;
+    }
+
+    std::string csvPath = outputFile + ".timing.csv";
+    std::ofstream ptpLog(csvPath);
+    if (ptpLog.is_open()) {
+        ptpLog << "frame_index,ptp_ns,delta_ms\n";
+    } else {
+        spdlog::warn("Could not open PTP sidecar log: {}", csvPath);
+    }
+
+    uint64_t frameIdx = 0;
+    while (auto item = buffer.pop()) {
+
+        if (!item.value().frame.empty()) {
+            writer.write(item.value().frame);
+
+            int64_t currentNs = item.value().ptpTimestamp.count();
+            if (ptpLog.is_open()) {
+                ptpLog << frameIdx << "," << currentNs << "\n";
+            }
+            frameIdx++;
+        }
+    }
+
+    writer.release();
+    if (ptpLog.is_open()) {
+        ptpLog.close();
+    }
+
+    spdlog::info("Recorder finished. Wrote {} frames to {} (and {})", frameIdx, outputFile, csvPath);
+}
 
 int main(const int argc, char *argv[]) {
     // ReSharper disable once CppUseStructuredBinding
@@ -89,9 +145,18 @@ int main(const int argc, char *argv[]) {
     VideoCapture cap;
     cv_cap_setup(&cap, flags);
 
-    // Thread-safe buffer for frames
-    std::vector<Mat> frameBuffer;
-    std::mutex bufferMutex;
+    auto frameBuffer = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
+    g_frameBuffer = &frameBuffer;
+    std::thread recorderThread(recorder, std::ref(frameBuffer), "output/rec.mkv", flags.width, flags.height, flags.fps);
+    g_recorderThread = &recorderThread;
+
+    std::signal(SIGINT, [](int sig) {
+        if (g_frameBuffer) {
+            g_frameBuffer->shutdown();
+        }
+        g_recorderThread->join();
+        std::exit(sig);
+    });
 
     vector<double> delta_times;
     delta_times.reserve(flags.rollingFpsFrameCount);
@@ -126,13 +191,8 @@ int main(const int argc, char *argv[]) {
         delta_times.push_back(delta_ms);
         frame_count++;
 
-        {
-            std::lock_guard lock(bufferMutex);
-            if (flags.bufferMaxSize == 0 || frameBuffer.size() < flags.bufferMaxSize) {
-                frameBuffer.push_back(frame);
-            } else {
-                spdlog::warn("buffer full, dropping frame #{}", frame_count);
-            }
+        if (!frameBuffer.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
+            spdlog::warn("buffer full, dropping frame #{}", frame_count);
         }
 
         if (frame_count >= flags.rollingFpsFrameCount) {
@@ -146,7 +206,7 @@ int main(const int argc, char *argv[]) {
 
             double rate = 1000.0 / mean_dt;
 
-            if (frame_count % 10 == 0) {
+            if (frame_count % flags.fpsReportingInterval == 0) {
                 spdlog::info(
                     "rolling avg fps of last {} frames: {:.2f}fps",
                     flags.rollingFpsFrameCount, rate);
