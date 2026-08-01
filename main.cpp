@@ -124,7 +124,7 @@ int main(const int argc, char *argv[]) {
             spdlog::critical("frame size from camera {}x{} != expected {}x{}", frame.cols, frame.rows, flags.width,
                              flags.height);
             recorder.shutdown();
-            return 1;
+            std::exit(1);
         }
 
         auto end_time = chrono::high_resolution_clock::now();
