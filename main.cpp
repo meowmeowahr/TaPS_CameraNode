@@ -35,13 +35,14 @@ void recorder(VideoBuffer<TimestampedFrame>& buffer,
 {
     spdlog::info("Start recorder thread targeting {}", outputFile);
 
-    int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
-    VideoWriter writer(outputFile, cv::CAP_FFMPEG, fourcc, targetFps, cv::Size(width, height));
+    // int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+    // VideoWriter writer(outputFile, cv::CAP_FFMPEG, fourcc, targetFps, cv::Size(width, height));
+    std::ofstream output(outputFile, std::ios::binary);
 
-    if (!writer.isOpened()) {
-        spdlog::error("Failed to open MKV VideoWriter for path: {}", outputFile);
-        return;
-    }
+    // if (!writer.isOpened()) {
+    //     spdlog::error("Failed to open MKV VideoWriter for path: {}", outputFile);
+    //     return;
+    // }
 
     std::string csvPath = outputFile + ".timing.csv";
     std::ofstream ptpLog(csvPath);
@@ -55,7 +56,11 @@ void recorder(VideoBuffer<TimestampedFrame>& buffer,
     while (auto item = buffer.pop()) {
 
         if (!item.value().frame.empty()) {
-            writer.write(item.value().frame);
+            // writer.write(item.value().frame);
+            output.write(
+                reinterpret_cast<const char*>(item.value().frame.data),
+                static_cast<std::streamsize>(item.value().frame.total() * item.value().frame.elemSize())
+            );
 
             int64_t currentNs = item.value().ptpTimestamp.count();
             if (ptpLog.is_open()) {
@@ -65,7 +70,8 @@ void recorder(VideoBuffer<TimestampedFrame>& buffer,
         }
     }
 
-    writer.release();
+    // writer.release();
+    output.close();
     if (ptpLog.is_open()) {
         ptpLog.close();
     }

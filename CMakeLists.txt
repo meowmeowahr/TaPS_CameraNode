@@ -13,7 +13,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(args)
 
-find_package(OpenCV 5 REQUIRED)
+find_package(OpenCV 5.0 REQUIRED)
 find_package(spdlog REQUIRED)
 
 add_executable(TaPS_CameraNode main.cpp
