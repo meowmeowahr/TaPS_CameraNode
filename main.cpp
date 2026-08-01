@@ -62,7 +62,7 @@ int main(const int argc, char *argv[]) {
     args::ValueFlag encoderThreadsFlag(parser, "threads", "Number of threads for the encoder", {'j', "encoder-threads"},
                                        flags.encoderThreads);
 
-    args::ValueFlag outputFileFlag(parser, "file", "Output file, defaults to output/rec.taps", {'o', "output"}, flags.outputFile);
+    args::ValueFlag outputDirFlag(parser, "dir", "Output directory, defaults to output/", {'o', "output"}, flags.outputDir);
 
     args::ValueFlag httpPortFlag(parser, "http-port", "HTTP server port", {'p', "http-port"}, flags.httpPort);
 
@@ -110,11 +110,9 @@ int main(const int argc, char *argv[]) {
 
     flags.encoderArgs = args::get(encoderArgsFlag);
     flags.encoderThreads = args::get(encoderThreadsFlag);
-    flags.outputFile = args::get(outputFileFlag);
+    flags.outputDir = args::get(outputDirFlag);
 
     flags.httpPort = args::get(httpPortFlag);
-
-    std::string outputFile = "output/rec.taps";
 
     if (enumerateOnly) {
         enumerate_camera_modes(flags.cameraId);
@@ -132,7 +130,7 @@ int main(const int argc, char *argv[]) {
     g_frameBuffer = &frameBuffer;
 
     // Start video recorder
-    VideoRecordThread::begin(&frameBuffer, outputFile, flags);
+    VideoRecordThread::begin(&frameBuffer, flags.outputDir, flags);
 
     // Start HTTP server
     HttpServer::begin(flags);

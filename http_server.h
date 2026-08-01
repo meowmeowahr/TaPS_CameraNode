@@ -18,7 +18,7 @@ using json = nlohmann::json;
 class HttpServer {
 public:
     static void begin(const RuntimeArgs &flags) {
-        s_dataPath = flags.outputFile.empty() ? "/" : flags.outputFile;
+        s_dataPath = flags.outputDir.empty() ? "/" : flags.outputDir;
 
         s_ws = std::make_unique<webserver>(create_webserver(flags.httpPort));
 
@@ -52,7 +52,7 @@ private:
             {"total_bytes", totalBytes},
             {"used_bytes", usedBytes},
             {"free_bytes", freeBytes},
-            {"used_percent", totalBytes ? (100.0 * usedBytes / totalBytes) : 0.0}
+            {"used_percent", totalBytes ? 100.0 * (usedBytes / totalBytes) : 0.0}
         };
     }
 

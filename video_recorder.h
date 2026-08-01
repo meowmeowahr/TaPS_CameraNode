@@ -30,11 +30,11 @@ struct TimestampedFrame {
 class VideoRecordThread {
 public:
     static void begin(VideoBuffer<TimestampedFrame> *frameBuffer,
-                      const std::string &outputFile,
+                      const std::string &outputDir,
                       const RuntimeArgs &flags) {
         s_buffer = frameBuffer;
         s_thread = std::thread(recorder, std::ref(*frameBuffer),
-                               outputFile, flags.width, flags.height, flags.fps, flags.encoderType, flags.encoderArgs,
+                               outputDir, flags.width, flags.height, flags.fps, flags.encoderType, flags.encoderArgs,
                                flags.encoderThreads);
         recording_ = false;
     }
@@ -168,12 +168,23 @@ private:
     }
 
     static void recorder(VideoBuffer<TimestampedFrame> &buffer,
-                         const std::string &outputFile,
+                         const std::string &outputDir,
                          int width, int height, double targetFps,
                          EncoderType encoderType,
                          const std::string &encoderArgsStr,
                          const unsigned char numEncoders) {
-        spdlog::info("Start recorder thread targeting {}", outputFile);
+        spdlog::info("Start recorder thread targeting {}", outputDir);
+
+        auto now = std::chrono::system_clock::now();
+        auto t   = std::chrono::system_clock::to_time_t(now);
+        auto us  = std::chrono::duration_cast<std::chrono::microseconds>(
+                       now.time_since_epoch()) % 1'000'000;
+
+        std::ostringstream oss;
+        oss << std::put_time(std::localtime(&t), "%Y-%m-%d_%H-%M-%S")
+            << '.' << std::setfill('0') << std::setw(6) << us.count();
+
+        auto outputFile = outputDir + "/rec_" + oss.str() + ".taps";
 
         std::ofstream output(outputFile, std::ios::binary);
         if (!output.is_open()) {
@@ -326,7 +337,7 @@ private:
         output.close();
 
         spdlog::info("Wrote {} frames to {}",
-                     writtenCount, outputFile);
+                     writtenCount, outputDir);
     }
 
     static inline bool recording_ = false;

@@ -6,7 +6,7 @@
 </head>
 <body>
     <h1>TaPS Camera Node</h1>
-    <button onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'start'})})">Start</button>
-    <button onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'stop'})})">Stop</button>
+    <button style="background-color: green; padding: 1rem; font-size: 1.5em; font-weight: bold;" onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'start'})})">Start</button>
+    <button style="background-color: red; padding: 1rem; font-size: 1.5em; font-weight: bold;" onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'stop'})})">Stop</button>
 </body>
 </html>
