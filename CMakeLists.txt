@@ -24,5 +24,6 @@ add_executable(TaPS_CameraNode main.cpp
         fourcc.h
         runtime_args.h
         cv_cap.h
-        video_queue.h)
+        video_queue.h
+        video_recorder.h)
 target_link_libraries(TaPS_CameraNode PRIVATE ${OpenCV_LIBS} spdlog::spdlog taywee::args)

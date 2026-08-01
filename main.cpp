@@ -18,70 +18,12 @@
 #include "fourcc.h"
 #include "runtime_args.h"
 #include "video_queue.h"
+#include "video_recorder.h"
+
+static VideoBuffer<TimestampedFrame>* g_frameBuffer = nullptr;
 
 using namespace cv;
 using namespace std;
-
-struct TimestampedFrame {
-    cv::Mat frame;
-    std::chrono::nanoseconds ptpTimestamp; // PTP/System clock timestamp
-};
-static VideoBuffer<TimestampedFrame>* g_frameBuffer = nullptr;
-static std::thread* g_recorderThread = nullptr;
-
-void recorder(VideoBuffer<TimestampedFrame>& buffer,
-              const std::string& outputFile,
-              int width, int height, double targetFps)
-{
-    spdlog::info("Start recorder thread targeting {}", outputFile);
-
-    // int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
-    // VideoWriter writer(outputFile, cv::CAP_FFMPEG, fourcc, targetFps, cv::Size(width, height));
-    std::ofstream output(outputFile, std::ios::binary);
-
-    // if (!writer.isOpened()) {
-    //     spdlog::error("Failed to open MKV VideoWriter for path: {}", outputFile);
-    //     return;
-    // }
-
-    std::string csvPath = outputFile + ".timing.csv";
-    std::ofstream ptpLog(csvPath);
-    if (ptpLog.is_open()) {
-        ptpLog << "frame_index,ptp_ns,delta_ms\n";
-    } else {
-        spdlog::warn("Could not open PTP sidecar log: {}", csvPath);
-    }
-
-    uint64_t frameIdx = 0;
-    while (auto item = buffer.pop()) {
-
-        if (!item.value().frame.empty()) {
-            // writer.write(item.value().frame);
-            output.write(
-                reinterpret_cast<const char*>(item.value().frame.data),
-                static_cast<std::streamsize>(item.value().frame.total() * item.value().frame.elemSize())
-            );
-
-            int64_t currentNs = item.value().ptpTimestamp.count();
-            if (ptpLog.is_open()) {
-                ptpLog << frameIdx << "," << currentNs << "\n";
-            }
-
-            if (buffer.pushClosed()) {
-                spdlog::info("frames left before safe shutdown: {}", buffer.size());
-            }
-            frameIdx++;
-        }
-    }
-
-    // writer.release();
-    output.close();
-    if (ptpLog.is_open()) {
-        ptpLog.close();
-    }
-
-    spdlog::info("Recorder finished. Wrote {} frames to {} (and {})", frameIdx, outputFile, csvPath);
-}
 
 int main(const int argc, char *argv[]) {
     // ReSharper disable once CppUseStructuredBinding
@@ -157,16 +99,11 @@ int main(const int argc, char *argv[]) {
 
     auto frameBuffer = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
     g_frameBuffer = &frameBuffer;
-    std::thread recorderThread(recorder, std::ref(frameBuffer), "output/rec.mkv", flags.width, flags.height, flags.fps);
-    g_recorderThread = &recorderThread;
 
-    std::signal(SIGINT, [](int sig) {
-        if (g_frameBuffer) {
-            g_frameBuffer->shutdown();
-        }
-        g_recorderThread->join();
-        std::exit(sig);
-    });
+    auto recorder = VideoRecordThread();
+    recorder.begin(&frameBuffer, "output/rec.raw", flags);
+
+    std::signal(SIGINT, [](const int sig){VideoRecordThread::shutdown();});
 
     vector<double> delta_times;
     delta_times.reserve(flags.rollingFpsFrameCount);
@@ -186,6 +123,7 @@ int main(const int argc, char *argv[]) {
         if (frame.rows != flags.height || frame.cols != flags.width) {
             spdlog::critical("frame size from camera {}x{} != expected {}x{}", frame.cols, frame.rows, flags.width,
                              flags.height);
+            recorder.shutdown();
             return 1;
         }
 
