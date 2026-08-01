@@ -24,6 +24,8 @@
 using namespace cv;
 using namespace std;
 
+inline VideoBuffer<TimestampedFrame> *g_frameBuffer;
+
 int main(const int argc, char *argv[]) {
     // ReSharper disable once CppUseStructuredBinding
     auto flags = RuntimeArgs{};
@@ -117,9 +119,16 @@ int main(const int argc, char *argv[]) {
     cv_cap_setup(&cap, flags);
 
     auto frameBuffer = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
+    g_frameBuffer = &frameBuffer;
     VideoRecordThread::begin(&frameBuffer, outputFile, flags);
 
-    std::signal(SIGINT, [](const int sig) { VideoRecordThread::shutdown(); });
+    std::signal(SIGINT, [](const int sig) {
+        std::cout << "\n";
+        spdlog::warn("SIGINT received");
+        g_frameBuffer->shutdown();
+        VideoRecordThread::shutdown();
+        std::exit(sig);
+    });
 
     vector<double> delta_times;
     delta_times.reserve(flags.rollingFpsFrameCount);
