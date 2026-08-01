@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <mutex>
 #include <vector>
+#include <stdexcept>
 
 #include "camera_enumeration.h"
 #include "cv_cap.h"
@@ -52,6 +53,14 @@ int main(const int argc, char *argv[]) {
     args::ValueFlag bufferMaxSizeFlag(parser, "buffer-max-size", "Maximum number of frames to buffer (0 for unlimited)",
                                       {"buffer-max-size"}, flags.bufferMaxSize);
 
+    // New flag for encoder
+    args::ValueFlag<std::string> encoderFlag(parser, "encoder", "Encoder type: jpeg or raw", {'e', "encoder"}, "jpeg");
+
+    // New flag for encoder arguments
+    args::ValueFlag<std::string> encoderArgsFlag(parser, "encoder-args",
+                                                 "Encoder arguments (e.g., quality:90 for jpeg, order:rgb/bgr/gray/bgr565/bgr555 for raw)",
+                                                 {'a', "encoder-args"}, flags.encoderArgs);
+
     args::CompletionFlag completion(parser, {"complete"});
 
     try {
@@ -85,6 +94,22 @@ int main(const int argc, char *argv[]) {
     flags.fpsReportingInterval = args::get(fpsReportingIntervalFlag);
     flags.bufferMaxSize = args::get(bufferMaxSizeFlag);
 
+    // Handle encoder flag
+    std::string encoderStr = args::get(encoderFlag);
+    if (encoderStr == "jpeg") {
+        flags.encoderType = EncoderType::JPEG;
+    } else if (encoderStr == "raw") {
+        flags.encoderType = EncoderType::RAW;
+    } else {
+        throw std::invalid_argument("Encoder must be 'jpeg' or 'raw'");
+    }
+
+    // Handle encoder args flag
+    flags.encoderArgs = args::get(encoderArgsFlag);
+
+    // Set output file based on encoder type
+    std::string outputFile = "output/rec.taps";
+
     if (enumerateOnly) {
         enumerate_camera_modes(flags.cameraId);
         return 0;
@@ -101,7 +126,7 @@ int main(const int argc, char *argv[]) {
     g_frameBuffer = &frameBuffer;
 
     auto recorder = VideoRecordThread();
-    recorder.begin(&frameBuffer, "output/rec.raw", flags);
+    recorder.begin(&frameBuffer, outputFile, flags);
 
     std::signal(SIGINT, [](const int sig){VideoRecordThread::shutdown();});
 
@@ -156,8 +181,8 @@ int main(const int argc, char *argv[]) {
 
             if (frame_count % flags.fpsReportingInterval == 0) {
                 spdlog::info(
-                    "rolling avg fps of last {} frames: {:.2f}fps",
-                    flags.rollingFpsFrameCount, rate);
+                        "rolling avg fps of last {} frames: {:.2f}fps",
+                        flags.rollingFpsFrameCount, rate);
                 spdlog::info("buffer health: {}/{}", frameBuffer.size(), flags.bufferMaxSize);
             }
 
