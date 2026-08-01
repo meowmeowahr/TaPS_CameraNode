@@ -19,8 +19,9 @@ struct RuntimeArgs {
     unsigned short rollingFpsFrameCount = 100;
     unsigned short fpsReportingInterval = 100;
     unsigned long bufferMaxSize = 0; // 0 means unlimited
+    unsigned char encoderThreads = 4;
     EncoderType encoderType = EncoderType::JPEG; // default to JPEG
-    std::string encoderArgs = ""; // encoder-specific arguments like "quality:90" or "order:rgb"
+    std::string encoderArgs; // encoder-specific arguments like "quality:90" or "order:rgb"
 };
 
 #endif //TAPS_CAMERANODE_RUNTIME_ARGS_H

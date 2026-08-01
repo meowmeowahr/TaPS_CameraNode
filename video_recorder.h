@@ -34,7 +34,7 @@ public:
                       const RuntimeArgs &flags) {
         s_buffer = frameBuffer;
         s_thread = std::thread(recorder, std::ref(*frameBuffer),
-                               outputFile, flags.width, flags.height, flags.fps, flags.encoderType, flags.encoderArgs);
+                               outputFile, flags.width, flags.height, flags.fps, flags.encoderType, flags.encoderArgs, flags.encoderThreads);
     }
 
     static void shutdown() {
@@ -47,31 +47,31 @@ public:
     }
 
 private:
-    struct RawJob {
-        uint64_t frameIdx;
-        int64_t ptpNs;
+    struct Job {
+        uint64_t frameIdx{};
+        int64_t ptpNs{};
         cv::Mat frame;
     };
 
-    struct EncodedResult {
-        uint64_t frameIdx;
-        int64_t ptpNs;
+    struct Result {
+        uint64_t frameIdx{};
+        int64_t ptpNs{};
         std::vector<unsigned char> jpegData; // holds either JPEG or raw bytes
     };
 
     class WorkerInbox {
     public:
-        void push(RawJob &&job) {
+        void push(Job &&job) {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_queue.push_back(std::move(job));
             m_cv.notify_one();
         }
 
-        std::optional<RawJob> pop() {
+        std::optional<Job> pop() {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_cv.wait(lock, [&] { return m_closed || !m_queue.empty(); });
             if (m_queue.empty()) return std::nullopt;
-            RawJob job = std::move(m_queue.front());
+            Job job = std::move(m_queue.front());
             m_queue.pop_front();
             return job;
         }
@@ -83,28 +83,25 @@ private:
         }
 
     private:
-        std::deque<RawJob> m_queue;
+        std::deque<Job> m_queue;
         std::mutex m_mutex;
         std::condition_variable m_cv;
         bool m_closed = false;
     };
 
-    // Each encoder writes finished results here in the order it received
-    // them; the merge step below round-robins across workers in the same
-    // order frames were dispatched, so output stays sequential.
     class ResultBuffer {
     public:
-        void push(EncodedResult &&r) {
+        void push(Result &&r) {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_queue.push_back(std::move(r));
             m_cv.notify_one();
         }
 
-        std::optional<EncodedResult> pop() {
+        std::optional<Result> pop() {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_cv.wait(lock, [&] { return m_closed || !m_queue.empty(); });
             if (m_queue.empty()) return std::nullopt;
-            EncodedResult r = std::move(m_queue.front());
+            Result r = std::move(m_queue.front());
             m_queue.pop_front();
             return r;
         }
@@ -116,7 +113,7 @@ private:
         }
 
     private:
-        std::deque<EncodedResult> m_queue;
+        std::deque<Result> m_queue;
         std::mutex m_mutex;
         std::condition_variable m_cv;
         bool m_closed = false;
@@ -132,8 +129,7 @@ private:
         std::stringstream ss(argsStr);
         std::string pair;
         while (std::getline(ss, pair, ',')) {
-            size_t colonPos = pair.find(':');
-            if (colonPos != std::string::npos) {
+            if (const size_t colonPos = pair.find(':'); colonPos != std::string::npos) {
                 std::string key = pair.substr(0, colonPos);
                 std::string value = pair.substr(colonPos + 1);
                 // Trim whitespace
@@ -165,7 +161,8 @@ private:
                          const std::string &outputFile,
                          int width, int height, double targetFps,
                          EncoderType encoderType,
-                         const std::string& encoderArgsStr) {
+                         const std::string& encoderArgsStr,
+                         const unsigned char numEncoders) {
         spdlog::info("Start recorder thread targeting {}", outputFile);
 
         std::ofstream output(outputFile, std::ios::binary);
@@ -186,62 +183,50 @@ private:
         output.write(reinterpret_cast<const char *>(&argsLength), sizeof(unsigned int));
         output.write(encoderArgsStr.c_str(), static_cast<std::streamsize>(encoderArgsStr.length()));
 
-        std::string csvPath = outputFile + ".timing.csv";
-        std::ofstream ptpLog(csvPath);
-        if (ptpLog.is_open()) {
-            ptpLog << "frame_index,ptp_ns\n";
-        } else {
-            spdlog::warn("Could not open PTP sidecar log: {}", csvPath);
-        }
-
         // Default values
         int jpegQuality = 85;
         int colorOrder = 0; // 0: RGB, 1: BGR, 2: GRAY, 3: BGR565, 4: BGR555
 
         // Parse encoder arguments
-        auto argsMap = parseEncoderArgs(encoderArgsStr);
-        for (const auto& arg : argsMap) {
-            if (encoderType == EncoderType::JPEG && arg.first == "quality") {
+        for (auto argsMap = parseEncoderArgs(encoderArgsStr); const auto&[arg, val] : argsMap) {
+            if (encoderType == EncoderType::JPEG && arg == "quality") {
                 try {
-                    int q = std::stoi(arg.second);
-                    if (q >= 0 && q <= 100) {
+                    if (int q = std::stoi(val); q >= 0 && q <= 100) {
                         jpegQuality = q;
                     } else {
                         spdlog::warn("JPEG quality {} out of range [0,100], using default {}", q, jpegQuality);
                     }
                 } catch (const std::exception& e) {
-                    spdlog::warn("Invalid JPEG value '{}': {}", arg.second, e.what());
+                    spdlog::warn("Invalid JPEG value '{}': {}", val, e.what());
                 }
-            } else if (encoderType == EncoderType::RAW && arg.first == "order") {
-                if (arg.second == "rgb") {
+            } else if (encoderType == EncoderType::RAW && arg == "order") {
+                if (val == "rgb") {
                     colorOrder = 0;
-                } else if (arg.second == "bgr") {
+                } else if (val == "bgr") {
                     colorOrder = 1;
-                } else if (arg.second == "gray") {
+                } else if (val == "gray") {
                     colorOrder = 2;
-                } else if (arg.second == "bgr565") {
+                } else if (val == "bgr565") {
                     colorOrder = 3;
-                } else if (arg.second == "bgr555") {
+                } else if (val == "bgr555") {
                     colorOrder = 4;
                 } else {
-                    spdlog::warn("Unknown color order '{}', using default RGB", arg.second);
+                    spdlog::warn("Unknown color order '{}', using default RGB", val);
                 }
             }
         }
 
-        constexpr unsigned kNumEncoders = 4;
+        std::vector<WorkerInbox> inboxes(numEncoders);
+        std::vector<ResultBuffer> results(numEncoders);
 
-        std::vector<WorkerInbox> inboxes(kNumEncoders);
-        std::vector<ResultBuffer> results(kNumEncoders);
-
-        // --- Encoder pool: worker i only ever reads inboxes[i], writes results[i] ---
         std::vector<std::thread> encoders;
-        encoders.reserve(kNumEncoders);
-        for (unsigned i = 0; i < kNumEncoders; ++i) {
+        encoders.reserve(numEncoders);
+
+        for (unsigned i = 0; i < numEncoders; ++i) {
             encoders.emplace_back([&, i, encoderType, jpegQuality, colorOrder]() {
                 std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, jpegQuality};
-                while (auto job = inboxes[i].pop()) {
-                    EncodedResult r;
+                while (const auto job = inboxes[i].pop()) {
+                    Result r;
                     r.frameIdx = job->frameIdx;
                     r.ptpNs = job->ptpNs;
                     if (encoderType == EncoderType::JPEG) {
@@ -257,6 +242,7 @@ private:
 
                         // Process based on color order
                         switch (colorOrder) {
+                            default:
                             case 0: // RGB
                                 if (img.channels() == 3) {
                                     cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
@@ -296,18 +282,15 @@ private:
         std::thread writerThread([&]() {
             unsigned rr = 0;
             while (true) {
-                auto r = results[rr].pop();
+                const auto r = results[rr].pop();
                 if (!r) break; // that worker is done and drained -> pipeline finished
-                uint32_t size = static_cast<uint32_t>(r->jpegData.size());
+                auto size = static_cast<uint32_t>(r->jpegData.size());
                 output.write(reinterpret_cast<const char *>(&r->frameIdx), sizeof(r->frameIdx));
                 output.write(reinterpret_cast<const char *>(&r->ptpNs), sizeof(r->ptpNs));
                 output.write(reinterpret_cast<const char *>(&size), sizeof(size));
                 output.write(reinterpret_cast<const char *>(r->jpegData.data()), size);
-                if (ptpLog.is_open()) {
-                    ptpLog << r->frameIdx << "," << r->ptpNs << "\n";
-                }
                 ++writtenCount;
-                rr = (rr + 1) % kNumEncoders;
+                rr = (rr + 1) % numEncoders;
             }
         });
 
@@ -316,12 +299,12 @@ private:
         unsigned nextWorker = 0;
         while (auto item = buffer.pop()) {
             if (item->frame.empty()) continue;
-            RawJob job;
+            Job job;
             job.frameIdx = frameIdx++;
             job.ptpNs = item->ptpTimestamp.count();
             job.frame = item->frame; // cv::Mat is a shallow/ref-counted handle
             inboxes[nextWorker].push(std::move(job));
-            nextWorker = (nextWorker + 1) % kNumEncoders;
+            nextWorker = (nextWorker + 1) % numEncoders;
         }
 
         for (auto &inbox: inboxes) inbox.close();
@@ -329,10 +312,9 @@ private:
         writerThread.join();
 
         output.close();
-        if (ptpLog.is_open()) ptpLog.close();
 
-        spdlog::info("Recorder finished. Wrote {} frames to {} (and {})",
-                     writtenCount, outputFile, csvPath);
+        spdlog::info("Wrote {} frames to {}",
+                     writtenCount, outputFile);
     }
 
     static inline VideoBuffer<TimestampedFrame> *s_buffer = nullptr;

@@ -1,17 +1,17 @@
 #include <chrono>
 #include <csignal>
-
-#include <opencv2/core.hpp>
-#include <opencv2/videoio.hpp>
-#include <spdlog/spdlog.h>
-
-#include <args.hxx>
 #include <deque>
 #include <fstream>
-#include <iomanip>
 #include <mutex>
 #include <vector>
 #include <stdexcept>
+
+#include <opencv2/core.hpp>
+#include <opencv2/videoio.hpp>
+
+#include <spdlog/spdlog.h>
+#include <args.hxx>
+
 
 #include "camera_enumeration.h"
 #include "cv_cap.h"
@@ -20,8 +20,6 @@
 #include "runtime_args.h"
 #include "video_queue.h"
 #include "video_recorder.h"
-
-static VideoBuffer<TimestampedFrame>* g_frameBuffer = nullptr;
 
 using namespace cv;
 using namespace std;
@@ -49,17 +47,17 @@ int main(const int argc, char *argv[]) {
     args::ValueFlag fpsReportingIntervalFlag(parser, "frames", "How often to report FPS, 0 to disable",
                                              {"fps-interval"}, flags.fpsReportingInterval);
 
-    // New flags for buffer
     args::ValueFlag bufferMaxSizeFlag(parser, "buffer-max-size", "Maximum number of frames to buffer (0 for unlimited)",
                                       {"buffer-max-size"}, flags.bufferMaxSize);
 
-    // New flag for encoder
-    args::ValueFlag<std::string> encoderFlag(parser, "encoder", "Encoder type: jpeg or raw", {'e', "encoder"}, "jpeg");
+    args::ValueFlag encoderFlag(parser, "encoder", "Encoder type: jpeg or raw", {'e', "encoder"}, string("jpeg"));
 
-    // New flag for encoder arguments
-    args::ValueFlag<std::string> encoderArgsFlag(parser, "encoder-args",
-                                                 "Encoder arguments (e.g., quality:90 for jpeg, order:rgb/bgr/gray/bgr565/bgr555 for raw)",
-                                                 {'a', "encoder-args"}, flags.encoderArgs);
+    args::ValueFlag encoderArgsFlag(parser, "encoder-args",
+                                    "Encoder arguments (e.g., quality:90 for jpeg, order:rgb/bgr/gray/bgr565/bgr555 for raw)",
+                                    {'a', "encoder-args"}, flags.encoderArgs);
+
+    args::ValueFlag encoderThreadsFlag(parser, "threads", "Number of threads for the encoder", {'j', "encoder-threads"},
+                                       flags.encoderThreads);
 
     args::CompletionFlag completion(parser, {"complete"});
 
@@ -94,9 +92,7 @@ int main(const int argc, char *argv[]) {
     flags.fpsReportingInterval = args::get(fpsReportingIntervalFlag);
     flags.bufferMaxSize = args::get(bufferMaxSizeFlag);
 
-    // Handle encoder flag
-    std::string encoderStr = args::get(encoderFlag);
-    if (encoderStr == "jpeg") {
+    if (std::string encoderStr = args::get(encoderFlag); encoderStr == "jpeg") {
         flags.encoderType = EncoderType::JPEG;
     } else if (encoderStr == "raw") {
         flags.encoderType = EncoderType::RAW;
@@ -104,10 +100,8 @@ int main(const int argc, char *argv[]) {
         throw std::invalid_argument("Encoder must be 'jpeg' or 'raw'");
     }
 
-    // Handle encoder args flag
     flags.encoderArgs = args::get(encoderArgsFlag);
 
-    // Set output file based on encoder type
     std::string outputFile = "output/rec.taps";
 
     if (enumerateOnly) {
@@ -123,12 +117,9 @@ int main(const int argc, char *argv[]) {
     cv_cap_setup(&cap, flags);
 
     auto frameBuffer = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
-    g_frameBuffer = &frameBuffer;
+    VideoRecordThread::begin(&frameBuffer, outputFile, flags);
 
-    auto recorder = VideoRecordThread();
-    recorder.begin(&frameBuffer, outputFile, flags);
-
-    std::signal(SIGINT, [](const int sig){VideoRecordThread::shutdown();});
+    std::signal(SIGINT, [](const int sig) { VideoRecordThread::shutdown(); });
 
     vector<double> delta_times;
     delta_times.reserve(flags.rollingFpsFrameCount);
@@ -148,7 +139,7 @@ int main(const int argc, char *argv[]) {
         if (frame.rows != flags.height || frame.cols != flags.width) {
             spdlog::critical("frame size from camera {}x{} != expected {}x{}", frame.cols, frame.rows, flags.width,
                              flags.height);
-            recorder.shutdown();
+            VideoRecordThread::shutdown();
             std::exit(1);
         }
 
@@ -181,8 +172,8 @@ int main(const int argc, char *argv[]) {
 
             if (frame_count % flags.fpsReportingInterval == 0) {
                 spdlog::info(
-                        "rolling avg fps of last {} frames: {:.2f}fps",
-                        flags.rollingFpsFrameCount, rate);
+                    "rolling avg fps of last {} frames: {:.2f}fps",
+                    flags.rollingFpsFrameCount, rate);
                 spdlog::info("buffer health: {}/{}", frameBuffer.size(), flags.bufferMaxSize);
             }
 
