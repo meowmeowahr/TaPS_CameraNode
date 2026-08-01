@@ -51,7 +51,7 @@ public:
         cv_.notify_all();
     }
 
-    bool pushClosed() {
+    bool pushClosed() const {
         return shuttingDown_;
     }
 

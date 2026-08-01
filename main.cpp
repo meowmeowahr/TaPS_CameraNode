@@ -1,17 +1,17 @@
 #include <chrono>
 #include <csignal>
-#include <deque>
-#include <fstream>
-#include <mutex>
-#include <vector>
-#include <stdexcept>
 
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
-
 #include <spdlog/spdlog.h>
-#include <args.hxx>
 
+#include <args.hxx>
+#include <deque>
+#include <fstream>
+#include <iomanip>
+#include <mutex>
+#include <vector>
+#include <stdexcept>
 
 #include "camera_enumeration.h"
 #include "cv_cap.h"
@@ -20,11 +20,12 @@
 #include "runtime_args.h"
 #include "video_queue.h"
 #include "video_recorder.h"
+#include "http_server.h"
+
+static VideoBuffer<TimestampedFrame> *g_frameBuffer = nullptr;
 
 using namespace cv;
 using namespace std;
-
-inline VideoBuffer<TimestampedFrame> *g_frameBuffer;
 
 int main(const int argc, char *argv[]) {
     // ReSharper disable once CppUseStructuredBinding
@@ -61,6 +62,10 @@ int main(const int argc, char *argv[]) {
     args::ValueFlag encoderThreadsFlag(parser, "threads", "Number of threads for the encoder", {'j', "encoder-threads"},
                                        flags.encoderThreads);
 
+    args::ValueFlag outputFileFlag(parser, "file", "Output file, defaults to output/rec.taps", {'o', "output"}, flags.outputFile);
+
+    args::ValueFlag httpPortFlag(parser, "http-port", "HTTP server port", {'p', "http-port"}, flags.httpPort);
+
     args::CompletionFlag completion(parser, {"complete"});
 
     try {
@@ -94,6 +99,7 @@ int main(const int argc, char *argv[]) {
     flags.fpsReportingInterval = args::get(fpsReportingIntervalFlag);
     flags.bufferMaxSize = args::get(bufferMaxSizeFlag);
 
+    // Handle encoder flag
     if (std::string encoderStr = args::get(encoderFlag); encoderStr == "jpeg") {
         flags.encoderType = EncoderType::JPEG;
     } else if (encoderStr == "raw") {
@@ -103,6 +109,10 @@ int main(const int argc, char *argv[]) {
     }
 
     flags.encoderArgs = args::get(encoderArgsFlag);
+    flags.encoderThreads = args::get(encoderThreadsFlag);
+    flags.outputFile = args::get(outputFileFlag);
+
+    flags.httpPort = args::get(httpPortFlag);
 
     std::string outputFile = "output/rec.taps";
 
@@ -120,13 +130,19 @@ int main(const int argc, char *argv[]) {
 
     auto frameBuffer = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
     g_frameBuffer = &frameBuffer;
+
+    // Start video recorder
     VideoRecordThread::begin(&frameBuffer, outputFile, flags);
+
+    // Start HTTP server
+    HttpServer::begin(flags);
 
     std::signal(SIGINT, [](const int sig) {
         std::cout << "\n";
         spdlog::warn("SIGINT received");
         g_frameBuffer->shutdown();
         VideoRecordThread::shutdown();
+        HttpServer::stop();
         std::exit(sig);
     });
 
@@ -149,6 +165,7 @@ int main(const int argc, char *argv[]) {
             spdlog::critical("frame size from camera {}x{} != expected {}x{}", frame.cols, frame.rows, flags.width,
                              flags.height);
             VideoRecordThread::shutdown();
+            HttpServer::stop();
             std::exit(1);
         }
 
@@ -190,5 +207,8 @@ int main(const int argc, char *argv[]) {
         }
     }
 
+    // Cleanup
+    VideoRecordThread::shutdown();
+    HttpServer::stop();
     return 0;
 }

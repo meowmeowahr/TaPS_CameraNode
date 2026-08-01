@@ -34,13 +34,22 @@ public:
                       const RuntimeArgs &flags) {
         s_buffer = frameBuffer;
         s_thread = std::thread(recorder, std::ref(*frameBuffer),
-                               outputFile, flags.width, flags.height, flags.fps, flags.encoderType, flags.encoderArgs, flags.encoderThreads);
+                               outputFile, flags.width, flags.height, flags.fps, flags.encoderType, flags.encoderArgs,
+                               flags.encoderThreads);
+        recording_ = false;
     }
+
+    static void setRecording(bool record) {
+        recording_ = record;
+    }
+
+    static bool isRecording() { return recording_; }
 
     static void shutdown() {
         if (s_buffer) {
             s_buffer->shutdown();
         }
+        recording_ = false;
         if (s_thread.joinable()) {
             s_thread.join();
         }
@@ -106,6 +115,7 @@ private:
             return r;
         }
 
+
         void close() {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_closed = true;
@@ -120,7 +130,7 @@ private:
     };
 
     // Helper function to parse encoder args string into a map
-    static std::map<std::string, std::string> parseEncoderArgs(const std::string& argsStr) {
+    static std::map<std::string, std::string> parseEncoderArgs(const std::string &argsStr) {
         std::map<std::string, std::string> argsMap;
         if (argsStr.empty()) {
             return argsMap;
@@ -161,7 +171,7 @@ private:
                          const std::string &outputFile,
                          int width, int height, double targetFps,
                          EncoderType encoderType,
-                         const std::string& encoderArgsStr,
+                         const std::string &encoderArgsStr,
                          const unsigned char numEncoders) {
         spdlog::info("Start recorder thread targeting {}", outputFile);
 
@@ -188,7 +198,7 @@ private:
         int colorOrder = 0; // 0: RGB, 1: BGR, 2: GRAY, 3: BGR565, 4: BGR555
 
         // Parse encoder arguments
-        for (auto argsMap = parseEncoderArgs(encoderArgsStr); const auto&[arg, val] : argsMap) {
+        for (auto argsMap = parseEncoderArgs(encoderArgsStr); const auto &[arg, val]: argsMap) {
             if (encoderType == EncoderType::JPEG && arg == "quality") {
                 try {
                     if (int q = std::stoi(val); q >= 0 && q <= 100) {
@@ -196,7 +206,7 @@ private:
                     } else {
                         spdlog::warn("JPEG quality {} out of range [0,100], using default {}", q, jpegQuality);
                     }
-                } catch (const std::exception& e) {
+                } catch (const std::exception &e) {
                     spdlog::warn("Invalid JPEG value '{}': {}", val, e.what());
                 }
             } else if (encoderType == EncoderType::RAW && arg == "order") {
@@ -231,7 +241,8 @@ private:
                     r.ptpNs = job->ptpNs;
                     if (encoderType == EncoderType::JPEG) {
                         cv::imencode(".jpg", job->frame, r.jpegData, params);
-                    } else { // RAW
+                    } else {
+                        // RAW
                         // Ensure the matrix is continuous for easy copying
                         cv::Mat img;
                         if (job->frame.isContinuous()) {
@@ -294,15 +305,16 @@ private:
             }
         });
 
-        // --- Dispatcher (this function, main loop): round-robin frames to inboxes ---
         uint64_t frameIdx = 0;
         unsigned nextWorker = 0;
         while (auto item = buffer.pop()) {
             if (item->frame.empty()) continue;
+            if (!recording_) continue;
+
             Job job;
             job.frameIdx = frameIdx++;
             job.ptpNs = item->ptpTimestamp.count();
-            job.frame = item->frame; // cv::Mat is a shallow/ref-counted handle
+            job.frame = item->frame;
             inboxes[nextWorker].push(std::move(job));
             nextWorker = (nextWorker + 1) % numEncoders;
         }
@@ -316,6 +328,8 @@ private:
         spdlog::info("Wrote {} frames to {}",
                      writtenCount, outputFile);
     }
+
+    static inline bool recording_ = false;
 
     static inline VideoBuffer<TimestampedFrame> *s_buffer = nullptr;
     static inline std::thread s_thread;

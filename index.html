@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>TaPS | Camera Node</title>
+</head>
+<body>
+    <h1>TaPS Camera Node</h1>
+    <button onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'start'})})">Start</button>
+    <button onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'stop'})})">Stop</button>
+</body>
+</html>

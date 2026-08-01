@@ -5,6 +5,8 @@
 #ifndef TAPS_CAMERANODE_RUNTIME_ARGS_H
 #define TAPS_CAMERANODE_RUNTIME_ARGS_H
 
+#include <string>
+
 enum class EncoderType {
     JPEG,
     RAW
@@ -21,7 +23,9 @@ struct RuntimeArgs {
     unsigned long bufferMaxSize = 0; // 0 means unlimited
     unsigned char encoderThreads = 4;
     EncoderType encoderType = EncoderType::JPEG; // default to JPEG
+    std::string outputFile;
     std::string encoderArgs; // encoder-specific arguments like "quality:90" or "order:rgb"
+    unsigned short httpPort = 8080; // HTTP server port
 };
 
 #endif //TAPS_CAMERANODE_RUNTIME_ARGS_H
