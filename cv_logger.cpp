@@ -31,8 +31,6 @@ void spdlog_opencv_callback(
             level = spdlog::level::info;
             break;
         case cv::utils::logging::LOG_LEVEL_DEBUG:
-            level = spdlog::level::debug;
-            break;
         case cv::utils::logging::LOG_LEVEL_VERBOSE:
         default:
             level = spdlog::level::trace;
