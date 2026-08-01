@@ -66,6 +66,10 @@ void recorder(VideoBuffer<TimestampedFrame>& buffer,
             if (ptpLog.is_open()) {
                 ptpLog << frameIdx << "," << currentNs << "\n";
             }
+
+            if (buffer.pushClosed()) {
+                spdlog::info("frames left before safe shutdown: {}", buffer.size());
+            }
             frameIdx++;
         }
     }

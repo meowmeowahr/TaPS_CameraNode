@@ -51,6 +51,10 @@ public:
         cv_.notify_all();
     }
 
+    bool pushClosed() {
+        return shuttingDown_;
+    }
+
     size_t size() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return queue_.size();
