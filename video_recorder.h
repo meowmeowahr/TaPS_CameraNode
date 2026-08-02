@@ -11,6 +11,7 @@
 #include <deque>
 #include <mutex>
 #include <condition_variable>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -22,6 +23,8 @@
 #include "runtime_args.h"
 #include "video_queue.h"
 
+namespace fs = std::filesystem;
+
 struct TimestampedFrame {
     cv::Mat frame;
     std::chrono::nanoseconds ptpTimestamp;
@@ -30,7 +33,7 @@ struct TimestampedFrame {
 class VideoRecordThread {
 public:
     static void begin(VideoBuffer<TimestampedFrame> *frameBuffer,
-                      const std::string &outputDir,
+                      const fs::path &outputDir,
                       const RuntimeArgs &flags) {
         s_buffer = frameBuffer;
         s_thread = std::thread(recorder, std::ref(*frameBuffer),
@@ -39,7 +42,7 @@ public:
         recording_ = false;
     }
 
-    static void setRecording(bool record) {
+    static void setRecording(const bool record) {
         recording_ = record;
     }
 
@@ -168,29 +171,28 @@ private:
     }
 
     static void recorder(VideoBuffer<TimestampedFrame> &buffer,
-                         const std::string &outputDir,
+                         const fs::path &outputDir,
                          int width, int height, double targetFps,
                          EncoderType encoderType,
                          const std::string &encoderArgsStr,
                          const unsigned char numEncoders) {
-        spdlog::info("Start recorder thread targeting {}", outputDir);
-
         auto now = std::chrono::system_clock::now();
-        auto t   = std::chrono::system_clock::to_time_t(now);
-        auto us  = std::chrono::duration_cast<std::chrono::microseconds>(
-                       now.time_since_epoch()) % 1'000'000;
+        auto t = std::chrono::system_clock::to_time_t(now);
+        auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                      now.time_since_epoch()) % 1'000'000;
 
         std::ostringstream oss;
         oss << std::put_time(std::localtime(&t), "%Y-%m-%d_%H-%M-%S")
-            << '.' << std::setfill('0') << std::setw(6) << us.count();
+                << '.' << std::setfill('0') << std::setw(6) << us.count();
 
-        auto outputFile = outputDir + "/rec_" + oss.str() + ".taps";
+        auto outputFile = outputDir / ("rec_" + oss.str() + ".taps");
 
         std::ofstream output(outputFile, std::ios::binary);
         if (!output.is_open()) {
-            spdlog::error("Failed to open output file: {}", outputFile);
+            spdlog::error("Failed to open output file: {}", outputFile.c_str());
             return;
         }
+        spdlog::info("Recording to {}", outputFile.c_str());
 
         // Write header
         std::string header = "TaPS";
@@ -204,11 +206,10 @@ private:
         output.write(reinterpret_cast<const char *>(&argsLength), sizeof(unsigned int));
         output.write(encoderArgsStr.c_str(), static_cast<std::streamsize>(encoderArgsStr.length()));
 
-        // Default values
         int jpegQuality = 85;
         int colorOrder = 0; // 0: RGB, 1: BGR, 2: GRAY, 3: BGR565, 4: BGR555
 
-        // Parse encoder arguments
+        // parse encoder args
         for (auto argsMap = parseEncoderArgs(encoderArgsStr); const auto &[arg, val]: argsMap) {
             if (encoderType == EncoderType::JPEG && arg == "quality") {
                 try {
@@ -245,16 +246,14 @@ private:
 
         for (unsigned i = 0; i < numEncoders; ++i) {
             encoders.emplace_back([&, i, encoderType, jpegQuality, colorOrder]() {
-                std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, jpegQuality};
+                const std::vector params = {cv::IMWRITE_JPEG_QUALITY, jpegQuality};
                 while (const auto job = inboxes[i].pop()) {
                     Result r;
                     r.frameIdx = job->frameIdx;
                     r.ptpNs = job->ptpNs;
                     if (encoderType == EncoderType::JPEG) {
                         cv::imencode(".jpg", job->frame, r.jpegData, params);
-                    } else {
-                        // RAW
-                        // Ensure the matrix is continuous for easy copying
+                    } else if (encoderType == EncoderType::RAW) {
                         cv::Mat img;
                         if (job->frame.isContinuous()) {
                             img = job->frame;
@@ -331,13 +330,13 @@ private:
         }
 
         for (auto &inbox: inboxes) inbox.close();
-        for (auto &t: encoders) t.join();
+        for (auto &encoder: encoders) encoder.join();
         writerThread.join();
 
         output.close();
 
         spdlog::info("Wrote {} frames to {}",
-                     writtenCount, outputDir);
+                     writtenCount, outputFile.c_str());
     }
 
     static inline bool recording_ = false;
