@@ -195,10 +195,10 @@ int main(const int argc, char *argv[]) {
             double rate = 1000.0 / mean_dt;
 
             if (frame_count % flags.fpsReportingInterval == 0) {
-                spdlog::info(
+                spdlog::debug(
                     "rolling avg fps of last {} frames: {:.2f}fps",
                     flags.rollingFpsFrameCount, rate);
-                spdlog::info("buffer health: {}/{}", frameBuffer.size(), flags.bufferMaxSize);
+                spdlog::debug("buffer health: {}/{}", frameBuffer.size(), flags.bufferMaxSize);
             }
 
             delta_times.erase(delta_times.begin());

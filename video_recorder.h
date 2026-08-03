@@ -10,6 +10,7 @@
 #include <vector>
 #include <deque>
 #include <mutex>
+#include <atomic>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -36,29 +37,50 @@ public:
                       const fs::path &outputDir,
                       const RuntimeArgs &flags) {
         s_buffer = frameBuffer;
-        s_thread = std::thread(recorder, std::ref(*frameBuffer),
-                               outputDir, flags.width, flags.height, flags.fps, flags.encoderType, flags.encoderArgs,
-                               flags.encoderThreads);
+        s_outputDir = outputDir;
+        s_width = flags.width;
+        s_height = flags.height;
+        s_fps = flags.fps;
+        s_encoderType = flags.encoderType;
+        s_encoderArgs = flags.encoderArgs;
+        s_numEncoders = flags.encoderThreads;
+
         recording_ = false;
+        s_dispatcherThread = std::thread(dispatcher);
     }
 
     static void setRecording(const bool record) {
-        recording_ = record;
+        std::unique_lock lock(s_cmdMutex);
+        if (record == recording_) return;
+        s_pendingCommand = record ? Command::Start : Command::Stop;
+        s_cmdCv.notify_all();
+        s_cmdCv.wait(lock, [&] { return s_pendingCommand == Command::None; });
     }
 
     static bool isRecording() { return recording_; }
 
     static void shutdown() {
+        // Make sure any active session is stopped and closed cleanly first.
+        setRecording(false);
+
         if (s_buffer) {
             s_buffer->shutdown();
         }
-        recording_ = false;
-        if (s_thread.joinable()) {
-            s_thread.join();
+
+        {
+            std::unique_lock<std::mutex> lock(s_cmdMutex);
+            s_shuttingDown = true;
+            s_cmdCv.notify_all();
+        }
+
+        if (s_dispatcherThread.joinable()) {
+            s_dispatcherThread.join();
         }
     }
 
 private:
+    enum class Command { None, Start, Stop };
+
     struct Job {
         uint64_t frameIdx{};
         int64_t ptpNs{};
@@ -118,7 +140,6 @@ private:
             return r;
         }
 
-
         void close() {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_closed = true;
@@ -132,7 +153,27 @@ private:
         bool m_closed = false;
     };
 
-    // Helper function to parse encoder args string into a map
+    // A single recording session: one output file, one header, one encoder pool.
+    struct Session {
+        std::ofstream output;
+        fs::path outputFile;
+        std::streampos frameCountFieldPos{};
+        uint64_t writtenCount = 0;
+
+        int jpegQuality = 85;
+        int colorOrder = 0; // 0: RGB, 1: BGR, 2: GRAY, 3: BGR565, 4: BGR555
+
+        std::vector<WorkerInbox> inboxes;
+        std::vector<ResultBuffer> results;
+        std::vector<std::thread> encoders;
+        std::thread writerThread;
+
+        uint64_t nextFrameIdx = 0;
+        unsigned nextWorker = 0;
+        unsigned numEncoders = 0;
+        EncoderType encoderType{};
+    };
+
     static std::map<std::string, std::string> parseEncoderArgs(const std::string &argsStr) {
         std::map<std::string, std::string> argsMap;
         if (argsStr.empty()) {
@@ -170,84 +211,91 @@ private:
         return argsMap;
     }
 
-    static void recorder(VideoBuffer<TimestampedFrame> &buffer,
-                         const fs::path &outputDir,
-                         int width, int height, double targetFps,
-                         EncoderType encoderType,
-                         const std::string &encoderArgsStr,
-                         const unsigned char numEncoders) {
-        auto now = std::chrono::system_clock::now();
-        auto t = std::chrono::system_clock::to_time_t(now);
-        auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-                      now.time_since_epoch()) % 1'000'000;
+    static fs::path makeOutputPath(const fs::path &outputDir) {
+        const auto now = std::chrono::system_clock::now();
+        const auto t = std::chrono::system_clock::to_time_t(now);
+        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                            now.time_since_epoch()) % 1'000'000;
 
         std::ostringstream oss;
         oss << std::put_time(std::localtime(&t), "%Y-%m-%d_%H-%M-%S")
                 << '.' << std::setfill('0') << std::setw(6) << us.count();
 
-        auto outputFile = outputDir / ("rec_" + oss.str() + ".taps");
+        return outputDir / ("rec_" + oss.str() + ".taps");
+    }
 
-        std::ofstream output(outputFile, std::ios::binary);
-        if (!output.is_open()) {
-            spdlog::error("Failed to open output file: {}", outputFile.c_str());
-            return;
+    static std::unique_ptr<Session> startSession(const fs::path &outputDir,
+                                                 const unsigned long width, const unsigned long height,
+                                                 const double targetFps,
+                                                 EncoderType encoderType,
+                                                 const std::string &encoderArgsStr,
+                                                 const unsigned numEncoders) {
+        auto session = std::make_unique<Session>();
+        session->outputFile = makeOutputPath(outputDir);
+        session->encoderType = encoderType;
+        session->numEncoders = numEncoders;
+
+        session->output.open(session->outputFile, std::ios::binary);
+        if (!session->output.is_open()) {
+            spdlog::error("Failed to open output file: {}", session->outputFile.c_str());
+            return nullptr;
         }
-        spdlog::info("Recording to {}", outputFile.c_str());
+        spdlog::info("Recording to {}", session->outputFile.c_str());
 
         // Write header
         std::string header = "TaPS";
-        header.push_back(0x01);
+        header.push_back(0x02); // bumped: header now includes frame count
         header.push_back(static_cast<char>(encoderType));
-        output.write(header.c_str(), static_cast<std::streamsize>(header.length()));
-        output.write(reinterpret_cast<const char *>(&width), sizeof(width));
-        output.write(reinterpret_cast<const char *>(&height), sizeof(height));
-        output.write(reinterpret_cast<const char *>(&targetFps), sizeof(targetFps));
-        unsigned int argsLength = encoderArgsStr.length();
-        output.write(reinterpret_cast<const char *>(&argsLength), sizeof(unsigned int));
-        output.write(encoderArgsStr.c_str(), static_cast<std::streamsize>(encoderArgsStr.length()));
+        session->output.write(header.c_str(), static_cast<std::streamsize>(header.length()));
+        session->output.write(reinterpret_cast<const char *>(&width), sizeof(width));
+        session->output.write(reinterpret_cast<const char *>(&height), sizeof(height));
+        session->output.write(reinterpret_cast<const char *>(&targetFps), sizeof(targetFps));
+        const unsigned int argsLength = encoderArgsStr.length();
+        session->output.write(reinterpret_cast<const char *>(&argsLength), sizeof(unsigned int));
+        session->output.write(encoderArgsStr.c_str(), static_cast<std::streamsize>(encoderArgsStr.length()));
 
-        int jpegQuality = 85;
-        int colorOrder = 0; // 0: RGB, 1: BGR, 2: GRAY, 3: BGR565, 4: BGR555
+        session->frameCountFieldPos = session->output.tellp();
+        constexpr uint64_t zeroCount = 0;
+        session->output.write(reinterpret_cast<const char *>(&zeroCount), sizeof(zeroCount));
+        session->output.flush();
 
         // parse encoder args
         for (auto argsMap = parseEncoderArgs(encoderArgsStr); const auto &[arg, val]: argsMap) {
             if (encoderType == EncoderType::JPEG && arg == "quality") {
                 try {
                     if (int q = std::stoi(val); q >= 0 && q <= 100) {
-                        jpegQuality = q;
+                        session->jpegQuality = q;
                     } else {
-                        spdlog::warn("JPEG quality {} out of range [0,100], using default {}", q, jpegQuality);
+                        spdlog::warn("JPEG quality {} out of range [0,100], using default {}", q, session->jpegQuality);
                     }
                 } catch (const std::exception &e) {
                     spdlog::warn("Invalid JPEG value '{}': {}", val, e.what());
                 }
             } else if (encoderType == EncoderType::RAW && arg == "order") {
                 if (val == "rgb") {
-                    colorOrder = 0;
+                    session->colorOrder = 0;
                 } else if (val == "bgr") {
-                    colorOrder = 1;
+                    session->colorOrder = 1;
                 } else if (val == "gray") {
-                    colorOrder = 2;
+                    session->colorOrder = 2;
                 } else if (val == "bgr565") {
-                    colorOrder = 3;
+                    session->colorOrder = 3;
                 } else if (val == "bgr555") {
-                    colorOrder = 4;
+                    session->colorOrder = 4;
                 } else {
                     spdlog::warn("Unknown color order '{}', using default RGB", val);
                 }
             }
         }
 
-        std::vector<WorkerInbox> inboxes(numEncoders);
-        std::vector<ResultBuffer> results(numEncoders);
-
-        std::vector<std::thread> encoders;
-        encoders.reserve(numEncoders);
+        session->inboxes = std::vector<WorkerInbox>(numEncoders);
+        session->results = std::vector<ResultBuffer>(numEncoders);
+        session->encoders.reserve(numEncoders);
 
         for (unsigned i = 0; i < numEncoders; ++i) {
-            encoders.emplace_back([&, i, encoderType, jpegQuality, colorOrder]() {
-                const std::vector params = {cv::IMWRITE_JPEG_QUALITY, jpegQuality};
-                while (const auto job = inboxes[i].pop()) {
+            session->encoders.emplace_back([s = session.get(), i, encoderType]() {
+                const std::vector params = {cv::IMWRITE_JPEG_QUALITY, s->jpegQuality};
+                while (const auto job = s->inboxes[i].pop()) {
                     Result r;
                     r.frameIdx = job->frameIdx;
                     r.ptpNs = job->ptpNs;
@@ -262,7 +310,7 @@ private:
                         }
 
                         // Process based on color order
-                        switch (colorOrder) {
+                        switch (s->colorOrder) {
                             default:
                             case 0: // RGB
                                 if (img.channels() == 3) {
@@ -292,57 +340,131 @@ private:
                         // Copy the raw data
                         r.jpegData.assign(img.datastart, img.dataend);
                     }
-                    results[i].push(std::move(r));
+                    s->results[i].push(std::move(r));
                 }
-                results[i].close();
+                s->results[i].close();
             });
         }
 
         // --- Writer thread: round-robins the same order frames were dispatched in ---
-        uint64_t writtenCount = 0;
-        std::thread writerThread([&]() {
+        session->writerThread = std::thread([s = session.get()]() {
             unsigned rr = 0;
             while (true) {
-                const auto r = results[rr].pop();
+                const auto r = s->results[rr].pop();
                 if (!r) break; // that worker is done and drained -> pipeline finished
                 auto size = static_cast<uint32_t>(r->jpegData.size());
-                output.write(reinterpret_cast<const char *>(&r->frameIdx), sizeof(r->frameIdx));
-                output.write(reinterpret_cast<const char *>(&r->ptpNs), sizeof(r->ptpNs));
-                output.write(reinterpret_cast<const char *>(&size), sizeof(size));
-                output.write(reinterpret_cast<const char *>(r->jpegData.data()), size);
-                ++writtenCount;
-                rr = (rr + 1) % numEncoders;
+                s->output.write(reinterpret_cast<const char *>(&r->frameIdx), sizeof(r->frameIdx));
+                s->output.write(reinterpret_cast<const char *>(&r->ptpNs), sizeof(r->ptpNs));
+                s->output.write(reinterpret_cast<const char *>(&size), sizeof(size));
+                s->output.write(reinterpret_cast<const char *>(r->jpegData.data()), size);
+                ++s->writtenCount;
+
+                rr = (rr + 1) % s->numEncoders;
             }
         });
 
-        uint64_t frameIdx = 0;
-        unsigned nextWorker = 0;
-        while (auto item = buffer.pop()) {
-            if (item->frame.empty()) continue;
-            if (!recording_) continue;
-
-            Job job;
-            job.frameIdx = frameIdx++;
-            job.ptpNs = item->ptpTimestamp.count();
-            job.frame = item->frame;
-            inboxes[nextWorker].push(std::move(job));
-            nextWorker = (nextWorker + 1) % numEncoders;
-        }
-
-        for (auto &inbox: inboxes) inbox.close();
-        for (auto &encoder: encoders) encoder.join();
-        writerThread.join();
-
-        output.close();
-
-        spdlog::info("Wrote {} frames to {}",
-                     writtenCount, outputFile.c_str());
+        return session;
     }
 
-    static inline bool recording_ = false;
+    static void patchFrameCount(Session &session) {
+        const auto endPos = session.output.tellp();
+        session.output.seekp(session.frameCountFieldPos);
+        session.output.write(reinterpret_cast<const char *>(&session.writtenCount), sizeof(session.writtenCount));
+        session.output.seekp(endPos);
+        session.output.flush();
+    }
+
+    static void stopSession(const std::unique_ptr<Session> &session) {
+        if (!session) return;
+
+        for (auto &inbox: session->inboxes) inbox.close();
+        for (auto &encoder: session->encoders) encoder.join();
+        session->writerThread.join();
+
+        patchFrameCount(*session);
+        session->output.close();
+
+        spdlog::info("Wrote {} frames to {}",
+                     session->writtenCount, session->outputFile.c_str());
+    }
+
+    static void dispatcher() {
+        std::unique_ptr<Session> session;
+
+        while (true) {
+            {
+                std::unique_lock lock(s_cmdMutex);
+                if (s_pendingCommand == Command::Start && !session) {
+                    lock.unlock();
+                    auto newSession = startSession(s_outputDir, s_width, s_height, s_fps,
+                                                   s_encoderType, s_encoderArgs, s_numEncoders);
+                    lock.lock();
+                    session = std::move(newSession);
+                    recording_ = session != nullptr;
+                    s_pendingCommand = Command::None;
+                    s_cmdCv.notify_all();
+                } else if (s_pendingCommand == Command::Stop && session) {
+                    lock.unlock();
+                    stopSession(session);
+                    lock.lock();
+                    session.reset();
+                    recording_ = false;
+                    s_pendingCommand = Command::None;
+                    s_cmdCv.notify_all();
+                } else if (s_pendingCommand != Command::None) {
+                    s_pendingCommand = Command::None;
+                    s_cmdCv.notify_all();
+                }
+
+                if (s_shuttingDown && !session) {
+                    break;
+                }
+            }
+
+            // Pull one frame with a short wait so we can keep checking for commands.
+            const auto item = s_buffer->pop();
+            if (!item) {
+                // Buffer has been shut down.
+                std::unique_lock<std::mutex> lock(s_cmdMutex);
+                if (session) {
+                    lock.unlock();
+                    stopSession(session);
+                    lock.lock();
+                    session.reset();
+                    recording_ = false;
+                }
+                break;
+            }
+
+            if (item->frame.empty()) continue;
+            if (!session) continue; // not currently recording; drop the frame
+
+            Job job;
+            job.frameIdx = session->nextFrameIdx++;
+            job.ptpNs = item->ptpTimestamp.count();
+            job.frame = item->frame;
+            session->inboxes[session->nextWorker].push(std::move(job));
+            session->nextWorker = (session->nextWorker + 1) % session->numEncoders;
+        }
+    }
+
+    static inline std::atomic<bool> recording_ = false;
 
     static inline VideoBuffer<TimestampedFrame> *s_buffer = nullptr;
-    static inline std::thread s_thread;
+    static inline fs::path s_outputDir;
+    static inline unsigned long s_width = 0;
+    static inline unsigned long s_height = 0;
+    static inline double s_fps = 0;
+    static inline EncoderType s_encoderType{};
+    static inline std::string s_encoderArgs;
+    static inline unsigned char s_numEncoders = 1;
+
+    static inline std::thread s_dispatcherThread;
+
+    static inline std::mutex s_cmdMutex;
+    static inline std::condition_variable s_cmdCv;
+    static inline auto s_pendingCommand = Command::None;
+    static inline bool s_shuttingDown = false;
 };
 
 #endif //TAPS_CAMERANODE_VIDEO_RECORDER_H
