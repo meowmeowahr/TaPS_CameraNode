@@ -61,7 +61,7 @@ private:
             {"total_bytes", totalBytes},
             {"used_bytes", usedBytes},
             {"free_bytes", freeBytes},
-            {"used_percent", totalBytes ? 100.0 * (usedBytes / totalBytes) : 0.0}
+            {"used_percent", totalBytes ? 100.0 * (static_cast<double>(usedBytes) / totalBytes) : 0.0}
         };
     }
 
