@@ -102,22 +102,13 @@
         }
 
         .badge.saving .badge-dot {
-            animation: spin 1s linear infinite;
-            border-radius: 0;
-            width: 8px;
-            height: 8px;
-            clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+            animation: pulse 1.5s infinite;
         }
 
         @keyframes pulse {
             0% { opacity: 1; }
             50% { opacity: 0.3; }
             100% { opacity: 1; }
-        }
-
-        @keyframes spin {
-            from { transform: rotate(0deg); }
-            to   { transform: rotate(360deg); }
         }
 
         .stream-container {

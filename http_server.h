@@ -81,7 +81,7 @@ public:
 
         {
             std::lock_guard lock(s_sseMutex);
-            for (auto &client: s_sseClients) {
+            for (const auto &client: s_sseClients) {
                 std::lock_guard cLock(client->mutex);
                 client->closed = true;
                 client->cv.notify_all();
@@ -131,7 +131,7 @@ private:
         const std::string frame = makeSseFrame(buildSsePayload());
         std::lock_guard lock(s_sseMutex);
         for (auto it = s_sseClients.begin(); it != s_sseClients.end();) {
-            auto &client = *it;
+            const auto &client = *it;
             std::lock_guard cLock(client->mutex);
             if (client->closed) {
                 it = s_sseClients.erase(it);
@@ -179,10 +179,14 @@ private:
         const auto interval = std::chrono::microseconds(1'000'000 / s_previewFps);
         auto next = std::chrono::steady_clock::now();
 
-        std::vector<int> jpegParams = {cv::IMWRITE_JPEG_QUALITY, s_jpegQuality};
+        const std::vector<int> jpegParams = {cv::IMWRITE_JPEG_QUALITY, s_jpegQuality};
+
+        const double scale = static_cast<double>(s_previewWidth) / 360.0;
+        const double fontScale = std::clamp(scale, 0.5, 4.0);
+        const int thickness = std::max(1, static_cast<int>(2 * fontScale));
 
         while (s_running) {
-            auto maybe = s_frameBuffer->pop(); // blocking
+            const auto maybe = s_frameBuffer->pop(); // blocking
             if (!maybe) continue;
 
             auto now = std::chrono::steady_clock::now();
@@ -201,10 +205,6 @@ private:
             localtime_r(&wallTime, &tm);
 
             std::string timeStr = std::format("{:%Y-%m-%d %H:%M:%S}", wallNow);
-
-            const double scale = static_cast<double>(resized.cols) / 360.0;
-            const double fontScale = std::clamp(scale, 0.5, 4.0);
-            const int thickness = std::max(1, static_cast<int>(2 * fontScale));
 
             cv::putText(
                 resized,
@@ -296,8 +296,7 @@ private:
             if (!parsed.contains("action") || !parsed["action"].is_string()) {
                 return errorResponse("missing or invalid 'action' field");
             }
-            const std::string action = parsed["action"].get<std::string>();
-            if (action == "start") {
+            if (const std::string action = parsed["action"].get<std::string>(); action == "start") {
                 if (VideoRecordThread::getState() == VideoRecordThread::RecorderState::Idle) {
                     VideoRecordThread::setRecording(true);
                     spdlog::info("HTTP: start recording requested");
@@ -435,7 +434,7 @@ private:
                 state->offset = 0;
 
                 // Now serve the first chunk of the new part
-                std::size_t n = std::min(state->part.size(), max);
+                const std::size_t n = std::min(state->part.size(), max);
                 std::memcpy(buf, state->part.data(), n);
                 state->offset = n;
                 return static_cast<ssize_t>(n);
