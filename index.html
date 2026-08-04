@@ -2,41 +2,381 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TaPS | Camera Node</title>
-    <script>
-        function refreshDisk() {
-            fetch('/disk')
-                .then(response => response.json())
-                .then(data => {
-                    const div = document.getElementById('disk-info');
-                    if (data.error) {
-                        div.textContent = 'Error: ' + data.error;
-                    } else {
-                        div.innerHTML = `
-                            <p>Path: ${data.path}</p>
-                            <p>Total: ${(data.total_bytes / (1024*1024)).toFixed(2)} MB</p>
-                            <p>Used: ${(data.used_bytes / (1024*1024)).toFixed(2)} MB</p>
-                            <p>Free: ${(data.free_bytes / (1024*1024)).toFixed(2)} MB</p>
-                            <p>Used Percent: ${data.used_percent.toFixed(2)}%</p>
-                        `;
-                    }
-                })
-                .catch(err => {
-                    document.getElementById('disk-info').textContent = 'Error fetching disk info: ' + err;
-                });
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --border-color: #334155;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --primary: #3b82f6;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --warning: #f59e0b;
         }
-        window.onload = refreshDisk;
-    </script>
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 1.5rem;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 720px;
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+        }
+
+        .header {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            letter-spacing: -0.025em;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.35rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            background-color: rgba(148, 163, 184, 0.1);
+            color: var(--text-muted);
+            border: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+
+        .badge.recording {
+            background-color: rgba(239, 68, 68, 0.15);
+            color: var(--danger);
+            border-color: rgba(239, 68, 68, 0.3);
+        }
+
+        .badge-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: currentColor;
+        }
+
+        .badge.recording .badge-dot {
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+
+        .stream-container {
+            position: relative;
+            background-color: #000;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .stream-container img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .controls {
+            padding: 1.25rem 1.5rem;
+            display: flex;
+            gap: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .btn {
+            flex: 1;
+            padding: 0.85rem 1rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.2s ease;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-start {
+            background-color: var(--success);
+            color: #fff;
+        }
+
+        .btn-start:hover:not(:disabled) {
+            filter: brightness(1.1);
+        }
+
+        .btn-stop {
+            background-color: var(--danger);
+            color: #fff;
+        }
+
+        .btn-stop:hover:not(:disabled) {
+            filter: brightness(1.1);
+        }
+
+        .disk-section {
+            padding: 1.25rem 1.5rem;
+        }
+
+        .disk-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        .disk-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .btn-refresh {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            padding: 0.3rem 0.6rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-refresh:hover {
+            color: var(--text-main);
+            border-color: var(--text-muted);
+        }
+
+        .progress-bar-bg {
+            width: 100%;
+            height: 10px;
+            background-color: #0f172a;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-bottom: 0.75rem;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background-color: var(--primary);
+            transition: width 0.4s ease, background-color 0.4s ease;
+        }
+
+        .disk-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            margin-top: 0.2rem;
+        }
+
+        .disk-path {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.75rem;
+            word-break: break-all;
+        }
+    </style>
 </head>
 <body>
-    <h1>TaPS Camera Node</h1>
-    <img src="/stream" width="400" alt="Stream">
-    <br>
-    <button style="background-color: green; padding: 1rem; font-size: 1.5em; font-weight: bold;" onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'start'})})">Start</button>
-    <button style="background-color: red; padding: 1rem; font-size: 1.5em; font-weight: bold;" onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'stop'})})">Stop</button>
-    <div id="disk-info">
-        Loading disk info...
+
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>TaPS Camera Node</h1>
+            <div id="status-badge" class="badge">
+                <span class="badge-dot"></span>
+                <span id="status-text">OFFLINE</span>
+            </div>
+        </div>
+
+        <!-- Video Stream -->
+        <div class="stream-container">
+            <img src="/stream" alt="Live Camera Stream">
+        </div>
+
+        <!-- Recording Controls -->
+        <div class="controls">
+            <button id="btn-start" class="btn btn-start" onclick="setRecording('start')">
+                ▶ Start Recording
+            </button>
+            <button id="btn-stop" class="btn btn-stop" onclick="setRecording('stop')">
+                ■ Stop Recording
+            </button>
+        </div>
+
+        <!-- Disk Info Section -->
+        <div class="disk-section">
+            <div class="disk-header">
+                <span class="disk-title">Storage</span>
+                <button class="btn-refresh" onclick="refreshDisk()">↻ Refresh</button>
+            </div>
+
+            <div class="progress-bar-bg">
+                <div id="disk-bar" class="progress-bar-fill"></div>
+            </div>
+
+            <div id="disk-info">
+                <div class="disk-stats">
+                    <div class="stat-item"><span class="stat-label">Used</span><span class="stat-value" id="disk-used">--</span></div>
+                    <div class="stat-item"><span class="stat-label">Free</span><span class="stat-value" id="disk-free">--</span></div>
+                    <div class="stat-item"><span class="stat-label">Total</span><span class="stat-value" id="disk-total">--</span></div>
+                </div>
+                <div class="disk-path" id="disk-path">Path: --</div>
+            </div>
+        </div>
     </div>
-    <button onclick="refreshDisk()">Refresh Disk Info</button>
+
+    <script>
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function checkStatus() {
+            fetch('/status')
+                .then(res => res.json())
+                .then(data => {
+                    const badge = document.getElementById('status-badge');
+                    const text = document.getElementById('status-text');
+                    const btnStart = document.getElementById('btn-start');
+                    const btnStop = document.getElementById('btn-stop');
+
+                    if (data.recording) {
+                        badge.className = 'badge recording';
+                        text.textContent = 'RECORDING';
+                        btnStart.disabled = true;
+                        btnStop.disabled = false;
+                    } else {
+                        badge.className = 'badge';
+                        text.textContent = 'IDLE';
+                        btnStart.disabled = false;
+                        btnStop.disabled = true;
+                    }
+                })
+                .catch(() => {
+                    const badge = document.getElementById('status-badge');
+                    const text = document.getElementById('status-text');
+                    badge.className = 'badge';
+                    text.textContent = 'OFFLINE';
+                });
+        }
+
+        function setRecording(action) {
+            fetch('/recording', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action })
+            })
+            .then(() => checkStatus())
+            .catch(err => alert('Failed to execution action: ' + err));
+        }
+
+        function refreshDisk() {
+            fetch('/disk')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('disk-path').textContent = 'Error: ' + data.error;
+                        return;
+                    }
+
+                    const pct = data.used_percent.toFixed(1);
+                    const bar = document.getElementById('disk-bar');
+
+                    bar.style.width = pct + '%';
+
+                    if (pct > 90) {
+                        bar.style.backgroundColor = 'var(--danger)';
+                    } else if (pct > 75) {
+                        bar.style.backgroundColor = 'var(--warning)';
+                    } else {
+                        bar.style.backgroundColor = 'var(--primary)';
+                    }
+
+                    document.getElementById('disk-used').textContent = `${formatBytes(data.used_bytes)} (${pct}%)`;
+                    document.getElementById('disk-free').textContent = formatBytes(data.free_bytes);
+                    document.getElementById('disk-total').textContent = formatBytes(data.total_bytes);
+                    document.getElementById('disk-path').textContent = `Path: ${data.path}`;
+                })
+                .catch(err => {
+                    document.getElementById('disk-path').textContent = 'Error fetching disk info';
+                });
+        }
+
+        // Initialize and polling loops
+        window.onload = () => {
+            refreshDisk();
+            checkStatus();
+
+            // Poll recording status every 2 seconds
+            setInterval(checkStatus, 2000);
+
+            // Periodically refresh disk status every 30 seconds
+            setInterval(refreshDisk, 30000);
+        };
+    </script>
 </body>
 </html>

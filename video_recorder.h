@@ -293,7 +293,7 @@ private:
 
         for (unsigned i = 0; i < numEncoders; ++i) {
             session->encoders.emplace_back([s = session.get(), i, encoderType]() {
-                pthread_setname_np(pthread_self(), std::format("encode-{}", i).c_str());
+                pthread_setname_np(pthread_self(), std::format("encode_{}", i).c_str());
                 const std::vector params = {cv::IMWRITE_JPEG_QUALITY, s->jpegQuality};
                 while (const auto job = s->inboxes[i].pop()) {
                     Result r;
