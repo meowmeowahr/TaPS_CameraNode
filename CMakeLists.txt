@@ -2,8 +2,6 @@ cmake_minimum_required(VERSION 3.28)
 project(TaPS_CameraNode)
 
 set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O0")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0")
 
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
