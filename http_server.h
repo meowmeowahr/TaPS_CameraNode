@@ -261,6 +261,7 @@ private:
         const double fontScale = std::clamp(scale, 0.5, 4.0);
         const int thickness = std::max(1, static_cast<int>(2 * fontScale));
 
+        cv::Mat resized;
         while (s_running) {
             const auto maybe = s_frameBuffer->pop(); // blocking
             if (!maybe) continue;
@@ -271,14 +272,9 @@ private:
             if (now < next) continue; // simple FPS gate
             next = now + interval;
 
-            cv::Mat resized;
             cv::resize(maybe->frame, resized,
                        cv::Size{s_previewWidth, s_previewHeight},
                        0, 0, cv::INTER_NEAREST);
-
-            std::time_t wallTime = std::chrono::system_clock::to_time_t(wallNow);
-            std::tm tm{};
-            localtime_r(&wallTime, &tm);
 
             std::string timeStr = std::format("{:%Y-%m-%d %H:%M:%S}", wallNow);
 
