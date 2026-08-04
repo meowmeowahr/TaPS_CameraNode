@@ -92,6 +92,7 @@ private:
             if (!maybe) continue;
 
             auto now = std::chrono::steady_clock::now();
+            auto wallNow = std::chrono::system_clock::now();
             if (now < next) continue; // simple FPS gate
             next = now + interval;
 
@@ -99,6 +100,9 @@ private:
             cv::resize(maybe->frame, resized,
                        cv::Size{s_previewWidth, s_previewHeight},
                        0, 0, cv::INTER_NEAREST);
+
+            std::string timeStr = std::format("{:%Y-%m-%d %H:%M:%S}", wallNow);
+            cv::putText(resized, timeStr, cv::Point{20, 20}, cv::FONT_HERSHEY_PLAIN, 1.0, cv::Scalar{255, 0, 0});
 
             std::vector<uint8_t> buf;
             if (!cv::imencode(".jpg", resized, buf, jpegParams)) {

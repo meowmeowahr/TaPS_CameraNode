@@ -163,20 +163,20 @@ int main(const int argc, char *argv[]) {
 
     auto start_time = chrono::high_resolution_clock::now();
 
+    if (cap.get(CAP_PROP_FRAME_HEIGHT) != flags.height || cap.get(CAP_PROP_FRAME_WIDTH) != flags.width) {
+        spdlog::critical("frame size from camera {}x{} != expected {}x{}", frame.cols, frame.rows, flags.width,
+                         flags.height);
+        VideoRecordThread::shutdown();
+        HttpServer::stop();
+        std::exit(1);
+    }
+
     for (;;) {
         cap.read(frame);
 
         if (frame.empty()) {
             spdlog::error("blank frame grabbed");
             break;
-        }
-
-        if (frame.rows != flags.height || frame.cols != flags.width) {
-            spdlog::critical("frame size from camera {}x{} != expected {}x{}", frame.cols, frame.rows, flags.width,
-                             flags.height);
-            VideoRecordThread::shutdown();
-            HttpServer::stop();
-            std::exit(1);
         }
 
         auto end_time = chrono::high_resolution_clock::now();
