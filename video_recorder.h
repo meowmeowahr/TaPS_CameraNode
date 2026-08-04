@@ -57,7 +57,8 @@ public:
 
     static void setRecording(const bool record) {
         std::unique_lock lock(s_cmdMutex);
-        if ((record && state == RecorderState::Recording) || (!record && state == RecorderState::Idle) || (!record && state == RecorderState::Saving)) return;
+        if ((record && state == RecorderState::Recording) || (!record && state == RecorderState::Idle) || (
+                !record && state == RecorderState::Saving)) return;
         s_pendingCommand = record ? Command::Start : Command::Stop;
         s_cmdCv.notify_all();
     }
@@ -100,10 +101,15 @@ private:
 
     class WorkerInbox {
     public:
+        explicit WorkerInbox(const size_t capacity = 2) : m_capacity(capacity) {
+        }
+
         void push(Job &&job) {
             std::unique_lock<std::mutex> lock(m_mutex);
+            m_cv.wait(lock, [&] { return m_closed || m_queue.size() < m_capacity; });
+            if (m_closed) return;
             m_queue.push_back(std::move(job));
-            m_cv.notify_one();
+            m_cv.notify_all();
         }
 
         std::optional<Job> pop() {
@@ -112,6 +118,7 @@ private:
             if (m_queue.empty()) return std::nullopt;
             Job job = std::move(m_queue.front());
             m_queue.pop_front();
+            m_cv.notify_all();
             return job;
         }
 
@@ -126,14 +133,19 @@ private:
         std::mutex m_mutex;
         std::condition_variable m_cv;
         bool m_closed = false;
+        size_t m_capacity;
     };
 
     class ResultBuffer {
     public:
+        explicit ResultBuffer(const size_t capacity = 8) : m_capacity(capacity) {}
+
         void push(Result &&r) {
             std::unique_lock<std::mutex> lock(m_mutex);
+            m_cv.wait(lock, [&] { return m_closed || m_queue.size() < m_capacity; });
+            if (m_closed) return;
             m_queue.push_back(std::move(r));
-            m_cv.notify_one();
+            m_cv.notify_all();
         }
 
         std::optional<Result> pop() {
@@ -142,6 +154,7 @@ private:
             if (m_queue.empty()) return std::nullopt;
             Result r = std::move(m_queue.front());
             m_queue.pop_front();
+            m_cv.notify_all();
             return r;
         }
 
@@ -156,6 +169,7 @@ private:
         std::mutex m_mutex;
         std::condition_variable m_cv;
         bool m_closed = false;
+        size_t m_capacity;
     };
 
     // A single recording session: one output file, one header, one encoder pool.
