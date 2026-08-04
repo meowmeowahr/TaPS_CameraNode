@@ -136,15 +136,15 @@ int main(const int argc, char *argv[]) {
     cv_cap_setup(&cap, flags);
 
     auto frameBuffer = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
-    auto frameBufferWebRtc = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
+    auto frameBufferStream = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
     g_frameBuffer = &frameBuffer;
-    g_frameBufferWebRtc = &frameBufferWebRtc;
+    g_frameBufferWebRtc = &frameBufferStream;
 
     // Start video recorder
     VideoRecordThread::begin(&frameBuffer, flags.outputDir, flags);
 
     // Start HTTP server
-    HttpServer::begin(&frameBufferWebRtc, flags);
+    HttpServer::begin(&frameBufferStream, flags);
 
     std::signal(SIGINT, [](const int sig) {
         std::cout << "\n";
@@ -195,7 +195,7 @@ int main(const int argc, char *argv[]) {
             spdlog::warn("record buffer full, dropping frame #{}", frame_count);
         }
 
-        if (!frameBufferWebRtc.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
+        if (!frameBufferStream.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
             spdlog::warn("webrtc buffer full, dropping frame #{}", frame_count);
         }
 

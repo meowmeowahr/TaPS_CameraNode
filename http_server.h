@@ -93,6 +93,7 @@ private:
 
             auto now = std::chrono::steady_clock::now();
             auto wallNow = std::chrono::system_clock::now();
+
             if (now < next) continue; // simple FPS gate
             next = now + interval;
 
@@ -101,8 +102,29 @@ private:
                        cv::Size{s_previewWidth, s_previewHeight},
                        0, 0, cv::INTER_NEAREST);
 
-            std::string timeStr = std::format("{:%Y-%m-%d %H:%M:%S}", wallNow);
-            cv::putText(resized, timeStr, cv::Point{20, 20}, cv::FONT_HERSHEY_PLAIN, 1.0, cv::Scalar{255, 0, 0});
+            std::time_t wallTime = std::chrono::system_clock::to_time_t(wallNow);
+            std::tm tm{};
+            localtime_r(&wallTime, &tm);
+
+            std::ostringstream oss;
+            oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+
+            const double scale = static_cast<double>(resized.cols) / 360.0;
+
+            const double fontScale = std::clamp(scale, 0.5, 4.0);
+            const int margin = static_cast<int>(10 * fontScale);
+            const int thickness = std::max(1, static_cast<int>(2 * fontScale));
+
+            cv::putText(
+                resized,
+                oss.str(),
+                cv::Point{margin, margin + static_cast<int>(25 * fontScale)},
+                cv::FONT_HERSHEY_PLAIN,
+                fontScale,
+                cv::Scalar{255, 0, 0},
+                thickness,
+                cv::LINE_8
+            );
 
             std::vector<uint8_t> buf;
             if (!cv::imencode(".jpg", resized, buf, jpegParams)) {
