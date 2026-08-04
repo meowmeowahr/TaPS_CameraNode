@@ -348,7 +348,7 @@ private:
 
         // --- Writer thread: round-robins the same order frames were dispatched in ---
         session->writerThread = std::thread([s = session.get()]() {
-            pthread_setname_np(pthread_self(), "video_writer");
+            pthread_setname_np(pthread_self(), "vid_writer");
             unsigned rr = 0;
             while (true) {
                 const auto r = s->results[rr].pop();
@@ -390,7 +390,7 @@ private:
     }
 
     static void dispatcher() {
-        pthread_setname_np(pthread_self(), "video_dispatcher");
+        pthread_setname_np(pthread_self(), "vid_dispatch");
         std::unique_ptr<Session> session;
 
         while (true) {
