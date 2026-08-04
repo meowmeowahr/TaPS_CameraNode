@@ -197,6 +197,12 @@ int main(const int argc, char *argv[]) {
             }
         }
 
+        if (VideoRecordThread::getState() != VideoRecordThread::RecorderState::Saving) {
+            if (!frameBuffer.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
+                spdlog::warn("record buffer full, dropping frame #{}", frame_count);
+            }
+        }
+
         if (!frameBufferStream.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
             spdlog::warn("stream buffer full, dropping frame #{}", frame_count);
         }
