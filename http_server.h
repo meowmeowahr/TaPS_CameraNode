@@ -175,7 +175,7 @@ private:
     }
 
     static json statusJson() {
-        return json{{"recording", VideoRecordThread::isRecording()}};
+        return json{{"recording", VideoRecordThread::getState()}};
     }
 
     static http_response jsonResponse(const json &j, const int code = 200) {
@@ -214,12 +214,12 @@ private:
             }
             const std::string action = parsed["action"].get<std::string>();
             if (action == "start") {
-                if (!VideoRecordThread::isRecording()) {
+                if (VideoRecordThread::getState() == VideoRecordThread::RecorderState::Idle) {
                     VideoRecordThread::setRecording(true);
                     spdlog::info("HTTP: start recording requested");
                 }
             } else if (action == "stop") {
-                if (VideoRecordThread::isRecording()) {
+                if (VideoRecordThread::getState() == VideoRecordThread::RecorderState::Recording) {
                     VideoRecordThread::setRecording(false);
                     spdlog::info("HTTP: stop recording requested");
                 }

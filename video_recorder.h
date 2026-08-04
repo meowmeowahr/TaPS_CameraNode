@@ -33,6 +33,12 @@ struct TimestampedFrame {
 
 class VideoRecordThread {
 public:
+    enum class RecorderState {
+        Idle,
+        Recording,
+        Saving,
+    };
+
     static void begin(VideoBuffer<TimestampedFrame> *frameBuffer,
                       const fs::path &outputDir,
                       const RuntimeArgs &flags) {
@@ -45,18 +51,18 @@ public:
         s_encoderArgs = flags.encoderArgs;
         s_numEncoders = flags.encoderThreads;
 
-        recording_ = false;
+        state = RecorderState::Idle;
         s_dispatcherThread = std::thread(dispatcher);
     }
 
     static void setRecording(const bool record) {
         std::unique_lock lock(s_cmdMutex);
-        if (record == recording_) return;
+        if ((record && state == RecorderState::Recording) || (!record && state == RecorderState::Idle) || (!record && state == RecorderState::Saving)) return;
         s_pendingCommand = record ? Command::Start : Command::Stop;
         s_cmdCv.notify_all();
     }
 
-    static bool isRecording() { return recording_; }
+    static RecorderState getState() { return state; }
 
     static void shutdown() {
         // Make sure any active session is stopped and closed cleanly first.
@@ -377,6 +383,7 @@ private:
 
     static void stopSession(const std::unique_ptr<Session> &session) {
         if (!session) return;
+        state = RecorderState::Saving;
 
         for (auto &inbox: session->inboxes) inbox.close();
         for (auto &encoder: session->encoders) encoder.join();
@@ -402,7 +409,7 @@ private:
                                                    s_encoderType, s_encoderArgs, s_numEncoders);
                     lock.lock();
                     session = std::move(newSession);
-                    recording_ = session != nullptr;
+                    state = session != nullptr ? RecorderState::Recording : RecorderState::Idle;
                     s_pendingCommand = Command::None;
                     s_cmdCv.notify_all();
                 } else if (s_pendingCommand == Command::Stop && session) {
@@ -410,7 +417,7 @@ private:
                     stopSession(session);
                     lock.lock();
                     session.reset();
-                    recording_ = false;
+                    state = RecorderState::Idle;
                     s_pendingCommand = Command::None;
                     s_cmdCv.notify_all();
                 } else if (s_pendingCommand != Command::None) {
@@ -427,13 +434,13 @@ private:
             const auto item = s_buffer->pop();
             if (!item) {
                 // Buffer has been shut down.
-                std::unique_lock<std::mutex> lock(s_cmdMutex);
+                std::unique_lock lock(s_cmdMutex);
                 if (session) {
                     lock.unlock();
                     stopSession(session);
                     lock.lock();
                     session.reset();
-                    recording_ = false;
+                    state = RecorderState::Idle;
                 }
                 break;
             }
@@ -450,7 +457,7 @@ private:
         }
     }
 
-    static inline std::atomic<bool> recording_ = false;
+    static inline std::atomic<RecorderState> state = RecorderState::Idle;
 
     static inline VideoBuffer<TimestampedFrame> *s_buffer = nullptr;
     static inline fs::path s_outputDir;
