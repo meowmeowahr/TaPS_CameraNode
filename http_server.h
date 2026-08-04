@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -56,12 +57,14 @@ public:
         s_running = true;
         s_encodeThread = std::thread(encodeLoop);
 
-        // Start the SSE heartbeat thread (pushes state+disk every 5 s)
+        // first cpu sample
+        readCpuTicks(s_prevIdle, s_prevTotal);
+
         s_heartbeatThread = std::thread(heartbeatLoop);
 
         // Wire recorder state-change callback so we push immediately on transition
         VideoRecordThread::setStateCallback([](VideoRecordThread::RecorderState) {
-            broadcastStatus();
+            broadcastEvent("status", buildStatusPayload());
         });
 
         s_ws->start(false); // non-blocking
@@ -106,29 +109,99 @@ private:
     static inline std::mutex s_sseMutex;
     static inline std::vector<std::shared_ptr<SseClient> > s_sseClients;
 
+    static void readCpuTicks(uint64_t &idle, uint64_t &total) {
+        idle = total = 0;
+        std::ifstream f("/proc/stat");
+        std::string label;
+        f >> label; // "cpu"
+        uint64_t user, nice, system, idle_v, iowait, irq, softirq, steal;
+        f >> user >> nice >> system >> idle_v >> iowait >> irq >> softirq >> steal;
+        idle = idle_v + iowait;
+        total = user + nice + system + idle_v + iowait + irq + softirq + steal;
+    }
+
+    static double cpuUsagePct() {
+        uint64_t idle, total;
+        readCpuTicks(idle, total);
+        const uint64_t dTotal = total - s_prevTotal;
+        const uint64_t dIdle = idle - s_prevIdle;
+        s_prevTotal = total;
+        s_prevIdle = idle;
+        if (dTotal == 0) return 0.0;
+        return 100.0 * (1.0 - static_cast<double>(dIdle) / static_cast<double>(dTotal));
+    }
+
+    static void readMemInfo(uint64_t &totalKb, uint64_t &availKb) {
+        totalKb = availKb = 0;
+        std::ifstream f("/proc/meminfo");
+        std::string key;
+        uint64_t val;
+        std::string unit;
+        int found = 0;
+        while (found < 2 && f >> key >> val >> unit) {
+            if (key == "MemTotal:") {
+                totalKb = val;
+                ++found;
+            } else if (key == "MemAvailable:") {
+                availKb = val;
+                ++found;
+            }
+        }
+    }
+
+    static inline uint64_t s_prevIdle = 0;
+    static inline uint64_t s_prevTotal = 0;
+
     static std::string stateString(const VideoRecordThread::RecorderState s) {
         using S = VideoRecordThread::RecorderState;
         switch (s) {
-            case S::Idle: return "Idle";
-            case S::Recording: return "Recording";
-            case S::Saving: return "Saving";
+            case S::Idle: return "I";
+            case S::Recording: return "R";
+            case S::Saving: return "S";
         }
-        return "Idle";
+        return "I";
     }
 
-    static json buildSsePayload() {
+    static json buildStatusPayload() {
+        return json{{"s", stateString(VideoRecordThread::getState())}};
+    }
+
+    static json buildDiskPayload() {
+        struct statvfs st{};
+        if (statvfs(s_dataPath.c_str(), &st) != 0)
+            return json{{"err", 1}};
+        const uint64_t t = st.f_blocks * st.f_frsize;
+        const uint64_t f = st.f_bavail * st.f_frsize;
+        const uint64_t u = t - f;
         return json{
-            {"state", stateString(VideoRecordThread::getState())},
-            {"disk", diskUsageJson()}
+            {"t", t}, {"u", u}, {"f", f},
+            {"p", t ? std::round(1000.0 * u / t) / 10.0 : 0.0},
+            {"path", s_dataPath}
         };
     }
 
-    static std::string makeSseFrame(const json &payload) {
-        return "event: status\ndata: " + payload.dump() + "\n\n";
+    static json buildCpuPayload() {
+        return json{{"p", std::round(cpuUsagePct() * 10.0) / 10.0}};
     }
 
-    static void broadcastStatus() {
-        const std::string frame = makeSseFrame(buildSsePayload());
+    static json buildMemPayload() {
+        uint64_t totalKb, availKb;
+        readMemInfo(totalKb, availKb);
+        const uint64_t usedKb = totalKb - availKb;
+        const double pct = totalKb ? std::round(1000.0 * usedKb / totalKb) / 10.0 : 0.0;
+        return json{
+            {"t", totalKb * 1024}, {"u", usedKb * 1024},
+            {"f", availKb * 1024}, {"p", pct}
+        };
+    }
+
+
+    static std::string makeSseFrame(const std::string &eventName, const json &payload) {
+        return "event: " + eventName + "\ndata: " + payload.dump() + "\n\n";
+    }
+
+    static void broadcastEvent(const std::string &eventName, const json &payload) {
+        const std::string frame = makeSseFrame(eventName, payload);
         std::lock_guard lock(s_sseMutex);
         for (auto it = s_sseClients.begin(); it != s_sseClients.end();) {
             const auto &client = *it;
@@ -152,11 +225,14 @@ private:
         while (s_running) {
             {
                 std::unique_lock lock(s_heartbeatMutex);
-                s_heartbeatCv.wait_for(lock, std::chrono::seconds(5),
+                s_heartbeatCv.wait_for(lock, std::chrono::seconds(1),
                                        [] { return !s_running.load(); });
             }
             if (!s_running) break;
-            broadcastStatus();
+
+            broadcastEvent("cpu", buildCpuPayload());
+            broadcastEvent("mem", buildMemPayload());
+            broadcastEvent("disk", buildDiskPayload());
         }
         spdlog::info("SSE heartbeat thread exited");
     }
@@ -232,6 +308,9 @@ private:
         spdlog::info("MJPEG encode thread exited");
     }
 
+    // ------------------------------------------------------------------
+    //  Logging helpers
+    // ------------------------------------------------------------------
     static void custom_access_log(const std::string &log_entry) {
         spdlog::debug("http request: {}", log_entry);
     }
@@ -240,6 +319,9 @@ private:
         spdlog::error("http error: {}", log_entry);
     }
 
+    // ------------------------------------------------------------------
+    //  Legacy JSON helpers (for REST endpoints)
+    // ------------------------------------------------------------------
     static json diskUsageJson() {
         struct statvfs stat{};
         if (statvfs(s_dataPath.c_str(), &stat) != 0) {
@@ -275,6 +357,9 @@ private:
         return jsonResponse(json{{"error", message}}, 400);
     }
 
+    // ------------------------------------------------------------------
+    //  Resources
+    // ------------------------------------------------------------------
     class StatusResource : public http_resource {
     public:
         http_response render_get(const http_request &) override {
@@ -332,36 +417,44 @@ private:
         }
     };
 
+    // ------------------------------------------------------------------
+    //  SSE Resource -- one long-lived streaming connection per browser tab.
+    //  On connect: immediately seeds the client with current state + all
+    //  three telemetry readings so the UI is populated before the first
+    //  heartbeat fires.
+    // ------------------------------------------------------------------
     class SseResource : public http_resource {
     public:
         http_response render_get(const http_request &) override {
-            // Create a slot for this client
             auto client = std::make_shared<SseClient>();
             {
                 std::lock_guard lock(s_sseMutex);
                 s_sseClients.push_back(client);
             }
 
-            // Seed with the current status immediately so the browser doesn't
-            // have to wait for the next heartbeat or state change.
+            // Seed initial burst: status + all three telemetry events.
+            // CPU is sampled twice quickly so the delta is near-zero on
+            // first connect rather than misleadingly high.
             {
                 std::lock_guard cLock(client->mutex);
-                client->messages.push(makeSseFrame(buildSsePayload()));
+                client->messages.push(makeSseFrame("status", buildStatusPayload()));
+                client->messages.push(makeSseFrame("disk", buildDiskPayload()));
+                client->messages.push(makeSseFrame("mem", buildMemPayload()));
+                // Fire a dummy cpu read to initialise the delta; result discarded.
+                uint64_t idle2, total2;
+                readCpuTicks(idle2, total2);
+                client->messages.push(makeSseFrame("cpu", json{{"p", 0.0}}));
             }
 
             auto producer = [client](std::uint64_t /*seq*/, char *buf, const std::size_t max) -> ssize_t {
                 std::unique_lock lock(client->mutex);
-
-                // Block until there is a message to send or the connection is closed
                 client->cv.wait(lock, [&] {
                     return client->closed || !client->messages.empty();
                 });
 
-                if (client->closed && client->messages.empty()) {
-                    return -1; // EOF -- browser EventSource will auto-reconnect
-                }
+                if (client->closed && client->messages.empty())
+                    return -1; // EOF -- EventSource will auto-reconnect
 
-                // Serve the front message, potentially in multiple chunks
                 std::string &msg = client->messages.front();
                 const std::size_t n = std::min(msg.size(), max);
                 std::memcpy(buf, msg.data(), n);
@@ -381,13 +474,15 @@ private:
         }
     };
 
+    // ------------------------------------------------------------------
+    //  MJPEG stream resource (unchanged)
+    // ------------------------------------------------------------------
     class StreamResource : public http_resource {
     public:
         http_response render_get(const http_request &) override {
             auto state = std::make_shared<ProducerState>();
 
             auto producer = [state](std::uint64_t, char *buf, const std::size_t max) -> ssize_t {
-                // serve leftover bytes
                 if (state->offset < state->part.size()) {
                     const std::size_t avail = state->part.size() - state->offset;
                     const std::size_t n = std::min(avail, max);
@@ -396,12 +491,9 @@ private:
                     return static_cast<ssize_t>(n);
                 }
 
-                // need a new multipart part
-                if (!s_running.load()) {
-                    return -1; // MHD_CONTENT_READER_END_OF_STREAM
-                }
+                if (!s_running.load())
+                    return -1;
 
-                // wait briefly for a newer frame
                 uint64_t seq = s_jpegSequence.load(std::memory_order_relaxed);
                 for (int i = 0; i < 30 && seq == state->lastSeq; ++i) {
                     if (!s_running.load()) return -1;
@@ -416,7 +508,6 @@ private:
                     jpeg = s_latestJpeg;
                 }
 
-                // Build the multipart part into state->part
                 state->part.clear();
                 if (jpeg.empty()) {
                     state->part =
@@ -433,7 +524,6 @@ private:
                 }
                 state->offset = 0;
 
-                // Now serve the first chunk of the new part
                 const std::size_t n = std::min(state->part.size(), max);
                 std::memcpy(buf, state->part.data(), n);
                 state->offset = n;

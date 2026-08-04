@@ -251,6 +251,58 @@
             margin-top: 0.75rem;
             word-break: break-all;
         }
+
+        .sys-section {
+            padding: 0 1.5rem 1.25rem;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .sys-card {
+            background-color: #0f172a;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.85rem 1rem;
+        }
+
+        .sys-card-title {
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 0.5rem;
+        }
+
+        .sys-bar-bg {
+            width: 100%;
+            height: 6px;
+            background-color: #1e293b;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 0.45rem;
+        }
+
+        .sys-bar-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: 3px;
+            transition: width 0.6s ease, background-color 0.4s ease;
+        }
+
+        .sys-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.78rem;
+        }
+
+        .sys-pct {
+            font-weight: 700;
+            font-size: 0.95rem;
+            line-height: 1;
+            margin-bottom: 0.35rem;
+        }
     </style>
 </head>
 <body>
@@ -300,6 +352,31 @@
                 <div class="disk-path" id="disk-path">Path: --</div>
             </div>
         </div>
+
+        <!-- CPU + Memory -->
+        <div class="sys-section">
+            <div class="sys-card">
+                <div class="sys-card-title">CPU</div>
+                <div class="sys-pct" id="cpu-pct">--%</div>
+                <div class="sys-bar-bg">
+                    <div id="cpu-bar" class="sys-bar-fill" style="background-color:var(--primary)"></div>
+                </div>
+                <div class="sys-stats">
+                    <span id="cpu-label" style="color:var(--text-muted)">--</span>
+                </div>
+            </div>
+            <div class="sys-card">
+                <div class="sys-card-title">Memory</div>
+                <div class="sys-pct" id="mem-pct">--%</div>
+                <div class="sys-bar-bg">
+                    <div id="mem-bar" class="sys-bar-fill" style="background-color:var(--primary)"></div>
+                </div>
+                <div class="sys-stats">
+                    <span id="mem-used" style="color:var(--text-muted)">--</span>
+                    <span id="mem-total" style="color:var(--text-muted)">--</span>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -311,82 +388,104 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
-        // Apply a status payload (from SSE or legacy fetch) to the UI
+        function barColor(pct) {
+            if (pct > 90) return 'var(--danger)';
+            if (pct > 75) return 'var(--warning)';
+            return 'var(--primary)';
+        }
+
+        // ----------------------------------------------------------------
+        //  State badge
+        // ----------------------------------------------------------------
+        const STATE_LABELS = { I: 'IDLE', R: 'RECORDING', S: 'SAVING' };
+        const STATE_CLASSES = { I: '', R: 'recording', S: 'saving' };
+
         function applyStatus(data) {
-            const badge   = document.getElementById('status-badge');
-            const text    = document.getElementById('status-text');
+            const s = data.s || 'I';
+            const badge    = document.getElementById('status-badge');
+            const text     = document.getElementById('status-text');
             const btnStart = document.getElementById('btn-start');
             const btnStop  = document.getElementById('btn-stop');
 
-            const state = data.state || (data.recording ? 'Recording' : 'Idle');
-
-            badge.className = 'badge';
-            switch (state) {
-                case 'Recording':
-                    badge.classList.add('recording');
-                    text.textContent = 'RECORDING';
-                    btnStart.disabled = true;
-                    btnStop.disabled  = false;
-                    break;
-                case 'Saving':
-                    badge.classList.add('saving');
-                    text.textContent = 'SAVING';
-                    btnStart.disabled = true;
-                    btnStop.disabled  = true;
-                    break;
-                default: // Idle
-                    text.textContent = 'IDLE';
-                    btnStart.disabled = false;
-                    btnStop.disabled  = true;
-                    break;
-            }
-
-            // Update disk info if included in the SSE payload
-            if (data.disk && !data.disk.error) {
-                applyDisk(data.disk);
-            }
+            badge.className = 'badge' + (STATE_CLASSES[s] ? ' ' + STATE_CLASSES[s] : '');
+            text.textContent = STATE_LABELS[s] || 'IDLE';
+            btnStart.disabled = (s !== 'I');
+            btnStop.disabled  = (s !== 'R');
         }
 
         function setOffline() {
-            const badge = document.getElementById('status-badge');
-            const text  = document.getElementById('status-text');
-            badge.className = 'badge offline';
-            text.textContent = 'OFFLINE';
+            document.getElementById('status-badge').className = 'badge offline';
+            document.getElementById('status-text').textContent = 'OFFLINE';
             document.getElementById('btn-start').disabled = true;
             document.getElementById('btn-stop').disabled  = true;
         }
 
-        function applyDisk(data) {
-            if (data.error) {
-                document.getElementById('disk-path').textContent = 'Error: ' + data.error;
+        // ----------------------------------------------------------------
+        //  Disk (compact keys: t, u, f, p, path)
+        // ----------------------------------------------------------------
+        function applyDisk(d) {
+            if (d.err) {
+                document.getElementById('disk-path').textContent = 'Error reading disk';
                 return;
             }
-            const pct = data.used_percent.toFixed(1);
+            // Support both compact SSE keys and legacy REST keys
+            const pct  = d.p  ?? d.used_percent ?? 0;
+            const used = d.u  ?? d.used_bytes   ?? 0;
+            const free = d.f  ?? d.free_bytes   ?? 0;
+            const tot  = d.t  ?? d.total_bytes  ?? 0;
+            const path = d.path ?? '';
+
+            const pctStr = pct.toFixed(1);
             const bar = document.getElementById('disk-bar');
-            bar.style.width = pct + '%';
-            if (pct > 90) {
-                bar.style.backgroundColor = 'var(--danger)';
-            } else if (pct > 75) {
-                bar.style.backgroundColor = 'var(--warning)';
-            } else {
-                bar.style.backgroundColor = 'var(--primary)';
-            }
-            document.getElementById('disk-used').textContent  = `${formatBytes(data.used_bytes)} (${pct}%)`;
-            document.getElementById('disk-free').textContent  = formatBytes(data.free_bytes);
-            document.getElementById('disk-total').textContent = formatBytes(data.total_bytes);
-            document.getElementById('disk-path').textContent  = `Path: ${data.path}`;
+            bar.style.width = pctStr + '%';
+            bar.style.backgroundColor = barColor(pct);
+
+            document.getElementById('disk-used').textContent  = `${formatBytes(used)} (${pctStr}%)`;
+            document.getElementById('disk-free').textContent  = formatBytes(free);
+            document.getElementById('disk-total').textContent = formatBytes(tot);
+            if (path) document.getElementById('disk-path').textContent = `Path: ${path}`;
         }
 
+        // ----------------------------------------------------------------
+        //  CPU (compact key: p)
+        // ----------------------------------------------------------------
+        function applyCpu(d) {
+            const pct = d.p ?? 0;
+            const pctStr = pct.toFixed(1);
+            document.getElementById('cpu-pct').textContent   = pctStr + '%';
+            document.getElementById('cpu-label').textContent = 'All cores';
+            const bar = document.getElementById('cpu-bar');
+            bar.style.width = pctStr + '%';
+            bar.style.backgroundColor = barColor(pct);
+        }
+
+        // ----------------------------------------------------------------
+        //  Memory (compact keys: t, u, f, p)
+        // ----------------------------------------------------------------
+        function applyMem(d) {
+            const pct = d.p ?? 0;
+            const pctStr = pct.toFixed(1);
+            document.getElementById('mem-pct').textContent   = pctStr + '%';
+            document.getElementById('mem-used').textContent  = formatBytes(d.u ?? 0) + ' used';
+            document.getElementById('mem-total').textContent = formatBytes(d.t ?? 0) + ' total';
+            const bar = document.getElementById('mem-bar');
+            bar.style.width = pctStr + '%';
+            bar.style.backgroundColor = barColor(pct);
+        }
+
+        // ----------------------------------------------------------------
+        //  Recording control
+        // ----------------------------------------------------------------
         function setRecording(action) {
             fetch('/recording', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: action })
+                body: JSON.stringify({ action })
             })
             .catch(err => alert('Failed to execute action: ' + err));
         }
 
-        // Manual disk refresh button — still useful when offline or for a quick check
+        // Manual disk refresh button
         function refreshDisk() {
             fetch('/disk')
                 .then(res => res.json())
@@ -397,33 +496,36 @@
         }
 
         // ----------------------------------------------------------------
-        //  SSE connection — replaces the setInterval polling loops
+        //  SSE connection
         // ----------------------------------------------------------------
         let sse = null;
 
         function connectSse() {
-            if (sse) { sse.close(); }
-
+            if (sse) sse.close();
             sse = new EventSource('/events');
 
-            sse.addEventListener('status', (e) => {
-                try {
-                    const data = JSON.parse(e.data);
-                    applyStatus(data);
-                } catch (err) {
-                    console.error('SSE parse error:', err);
-                }
+            sse.addEventListener('status', e => {
+                try { applyStatus(JSON.parse(e.data)); } catch(err) { console.error('SSE status:', err); }
+            });
+            sse.addEventListener('disk', e => {
+                try { applyDisk(JSON.parse(e.data));   } catch(err) { console.error('SSE disk:', err); }
+            });
+            sse.addEventListener('cpu', e => {
+                try { applyCpu(JSON.parse(e.data));    } catch(err) { console.error('SSE cpu:', err); }
+            });
+            sse.addEventListener('mem', e => {
+                try { applyMem(JSON.parse(e.data));    } catch(err) { console.error('SSE mem:', err); }
             });
 
             sse.onerror = () => {
                 setOffline();
-                // EventSource will automatically retry; no manual reconnect needed.
+                // EventSource auto-retries; no manual reconnect needed.
             };
         }
 
         window.onload = () => {
-            refreshDisk();   // show disk data immediately on first load
-            connectSse();    // start the SSE connection
+            refreshDisk();  // populate disk immediately before first SSE heartbeat
+            connectSse();
         };
     </script>
 </body>
