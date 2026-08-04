@@ -107,8 +107,7 @@ private:
             std::tm tm{};
             localtime_r(&wallTime, &tm);
 
-            std::ostringstream oss;
-            oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+            std::string timeStr = std::format("{:%Y-%m-%d %F}", wallNow);
 
             const double scale = static_cast<double>(resized.cols) / 360.0;
             const double fontScale = std::clamp(scale, 0.5, 4.0);
@@ -116,7 +115,7 @@ private:
 
             cv::putText(
                 resized,
-                oss.str(),
+                timeStr,
                 cv::Point{20, resized.rows - 20},
                 cv::FONT_HERSHEY_PLAIN,
                 fontScale,
