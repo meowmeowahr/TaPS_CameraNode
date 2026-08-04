@@ -110,20 +110,18 @@ private:
             oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
 
             const double scale = static_cast<double>(resized.cols) / 360.0;
-
             const double fontScale = std::clamp(scale, 0.5, 4.0);
-            const int margin = static_cast<int>(10 * fontScale);
             const int thickness = std::max(1, static_cast<int>(2 * fontScale));
 
             cv::putText(
                 resized,
                 oss.str(),
-                cv::Point{margin, margin + static_cast<int>(25 * fontScale)},
+                cv::Point{20, resized.rows - 20},
                 cv::FONT_HERSHEY_PLAIN,
                 fontScale,
                 cv::Scalar{255, 0, 0},
                 thickness,
-                cv::LINE_8
+                cv::LINE_4
             );
 
             std::vector<uint8_t> buf;
@@ -133,7 +131,7 @@ private:
             }
 
             {
-                std::lock_guard<std::mutex> lock(s_jpegMutex);
+                std::lock_guard lock(s_jpegMutex);
                 s_latestJpeg.swap(buf);
                 s_jpegSequence.fetch_add(1, std::memory_order_relaxed);
             }

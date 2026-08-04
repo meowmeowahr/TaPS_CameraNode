@@ -22,7 +22,7 @@
 #include "http_server.h"
 
 static VideoBuffer<TimestampedFrame> *g_frameBuffer = nullptr;
-static VideoBuffer<TimestampedFrame> *g_frameBufferWebRtc = nullptr;
+static VideoBuffer<TimestampedFrame> *g_frameBufferStream = nullptr;
 
 using namespace cv;
 using namespace std;
@@ -138,7 +138,7 @@ int main(const int argc, char *argv[]) {
     auto frameBuffer = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
     auto frameBufferStream = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
     g_frameBuffer = &frameBuffer;
-    g_frameBufferWebRtc = &frameBufferStream;
+    g_frameBufferStream = &frameBufferStream;
 
     // Start video recorder
     VideoRecordThread::begin(&frameBuffer, flags.outputDir, flags);
@@ -150,7 +150,7 @@ int main(const int argc, char *argv[]) {
         std::cout << "\n";
         spdlog::warn("SIGINT received");
         g_frameBuffer->shutdown();
-        g_frameBufferWebRtc->shutdown();
+        g_frameBufferStream->shutdown();
         VideoRecordThread::shutdown();
         HttpServer::stop();
         std::exit(sig);
@@ -196,7 +196,7 @@ int main(const int argc, char *argv[]) {
         }
 
         if (!frameBufferStream.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
-            spdlog::warn("webrtc buffer full, dropping frame #{}", frame_count);
+            spdlog::warn("stream buffer full, dropping frame #{}", frame_count);
         }
 
         if (frame_count >= flags.rollingFpsFrameCount) {

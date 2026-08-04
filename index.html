@@ -25,19 +25,18 @@
                     document.getElementById('disk-info').textContent = 'Error fetching disk info: ' + err;
                 });
         }
-        // Optionally load on page load
         window.onload = refreshDisk;
     </script>
 </head>
 <body>
     <h1>TaPS Camera Node</h1>
+    <img src="/stream" width="400" alt="Stream">
+    <br>
     <button style="background-color: green; padding: 1rem; font-size: 1.5em; font-weight: bold;" onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'start'})})">Start</button>
     <button style="background-color: red; padding: 1rem; font-size: 1.5em; font-weight: bold;" onclick="fetch('/recording',{method:'POST',body:JSON.stringify({'action': 'stop'})})">Stop</button>
     <div id="disk-info">
         Loading disk info...
     </div>
     <button onclick="refreshDisk()">Refresh Disk Info</button>
-    <br>
-    <img src="/stream" width="400" alt="Stream">
 </body>
 </html>
