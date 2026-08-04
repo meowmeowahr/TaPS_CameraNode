@@ -62,13 +62,17 @@ int main(const int argc, char *argv[]) {
     args::ValueFlag encoderThreadsFlag(parser, "threads", "Number of threads for the encoder", {'j', "encoder-threads"},
                                        flags.encoderThreads);
 
-    args::ValueFlag outputDirFlag(parser, "dir", "Output directory, defaults to output/", {'o', "output"}, flags.outputDir);
+    args::ValueFlag outputDirFlag(parser, "dir", "Output directory, defaults to output/", {'o', "output"},
+                                  flags.outputDir);
 
     args::ValueFlag httpPortFlag(parser, "http-port", "HTTP server port", {'p', "http-port"}, flags.httpPort);
 
-    args::ValueFlag streamJpegQualityFlag(parser, "quality", "MJPEG streaming quality", {'q', "stream-quality"}, flags.jpegStreamQuality);
-    args::ValueFlag streamJpegWidthFlag(parser, "px", "MJPEG streaming width", {'W', "stream-width"}, flags.jpegStreamWidth);
-    args::ValueFlag streamJpegHeightFlag(parser, "px", "MJPEG streaming height", {'H', "stream-height"}, flags.jpegStreamHeight);
+    args::ValueFlag streamJpegQualityFlag(parser, "quality", "MJPEG streaming quality", {'q', "stream-quality"},
+                                          flags.jpegStreamQuality);
+    args::ValueFlag streamJpegWidthFlag(parser, "px", "MJPEG streaming width", {'W', "stream-width"},
+                                        flags.jpegStreamWidth);
+    args::ValueFlag streamJpegHeightFlag(parser, "px", "MJPEG streaming height", {'H', "stream-height"},
+                                         flags.jpegStreamHeight);
     args::ValueFlag streamJpegFpsFlag(parser, "fps", "MJPEG streaming FPS", {"stream-fps"}, flags.jpegStreamFps);
 
     args::CompletionFlag completion(parser, {"complete"});
@@ -188,43 +192,54 @@ int main(const int argc, char *argv[]) {
 
         start_time = end_time;
 
+        bool streamEnabled = (flags.jpegStreamFps > 0);
+        std::chrono::steady_clock::time_point lastStreamPush;
+        std::chrono::microseconds streamInterval;
+        if (streamEnabled) {
+            lastStreamPush = std::chrono::steady_clock::now();
+            streamInterval = std::chrono::microseconds(1'000'000 / flags.jpegStreamFps);
+        }
+
         delta_times.push_back(delta_ms);
         frame_count++;
 
         if (VideoRecordThread::getState() != VideoRecordThread::RecorderState::Saving) {
-            if (!frameBuffer.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
+            if (!frameBuffer.tryPush(TimestampedFrame{
+                .frame = frame, .ptpTimestamp = std::chrono::system_clock::now().time_since_epoch()
+            })) {
                 spdlog::warn("record buffer full, dropping frame #{}", frame_count);
             }
         }
 
-        if (!frameBufferStream.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
-            spdlog::warn("stream buffer full, dropping frame #{}", frame_count);
+        if (streamEnabled) {
+            if (auto now = std::chrono::steady_clock::now(); now - lastStreamPush >= streamInterval) {
+                if (!frameBufferStream.tryPush(TimestampedFrame{
+                    .frame = frame, .ptpTimestamp = std::chrono::system_clock::now().time_since_epoch()
+                })) {
+                    spdlog::warn("stream buffer full, dropping frame #{}", frame_count);
+                }
+                lastStreamPush = now;
+            }
         }
 
         if (frame_count >= flags.rollingFpsFrameCount) {
-            double sum_dt = 0.0;
-
-            for (const double dt: delta_times)
-                sum_dt += dt;
-
-            const double mean_dt =
-                    sum_dt / flags.rollingFpsFrameCount;
-
+            double sum_dt = std::accumulate(delta_times.begin(), delta_times.end(), 0.0);
+            const double mean_dt = sum_dt / flags.rollingFpsFrameCount;
             double rate = 1000.0 / mean_dt;
 
             if (frame_count % flags.fpsReportingInterval == 0) {
                 spdlog::debug(
                     "rolling avg fps of last {} frames: {:.2f}fps",
                     flags.rollingFpsFrameCount, rate);
-                spdlog::debug("buffer health: {}/{}", frameBuffer.size(), flags.bufferMaxSize);
+                spdlog::debug("buffer usage: {}/{}", frameBuffer.size(), flags.bufferMaxSize);
             }
 
             delta_times.erase(delta_times.begin());
         }
-    }
 
-    // Cleanup
-    VideoRecordThread::shutdown();
-    HttpServer::stop();
-    return 0;
+        // Cleanup
+        VideoRecordThread::shutdown();
+        HttpServer::stop();
+        return 0;
+    }
 }
