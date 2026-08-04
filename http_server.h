@@ -82,6 +82,7 @@ private:
     static inline int s_jpegQuality = 70;
 
     static void encodeLoop() {
+        pthread_setname_np(pthread_self(), "stream_encoder");
         const auto interval = std::chrono::microseconds(1'000'000 / s_previewFps);
         auto next = std::chrono::steady_clock::now();
 
