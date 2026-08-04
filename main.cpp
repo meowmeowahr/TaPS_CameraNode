@@ -8,7 +8,6 @@
 #include <args.hxx>
 #include <deque>
 #include <fstream>
-#include <iomanip>
 #include <mutex>
 #include <vector>
 #include <stdexcept>
@@ -21,8 +20,10 @@
 #include "video_queue.h"
 #include "video_recorder.h"
 #include "http_server.h"
+#include "webrtc_substream.h"
 
 static VideoBuffer<TimestampedFrame> *g_frameBuffer = nullptr;
+static VideoBuffer<TimestampedFrame> *g_frameBufferWebRtc = nullptr;
 
 using namespace cv;
 using namespace std;
@@ -40,8 +41,8 @@ int main(const int argc, char *argv[]) {
 
     args::ValueFlag cameraIdFlag(parser, "camera", "Camera ID as in /dev/videoX", {'c', "camera"}, flags.cameraId);
     args::ValueFlag fpsFlag(parser, "fps", "Target frame rate", {'f', "fps"}, flags.fps);
-    args::ValueFlag widthFlag(parser, "width", "Target frame width", {'w', "width"}, flags.width);
-    args::ValueFlag heightFlag(parser, "height", "Target frame height", {'h', "height"}, flags.height);
+    args::ValueFlag widthFlag(parser, "px", "Target frame width", {'w', "width"}, flags.width);
+    args::ValueFlag heightFlag(parser, "px", "Target frame height", {'h', "height"}, flags.height);
     args::ValueFlag fourccFlag(parser, "fourcc", "Target FourCC string", {'F', "fourcc"},
                                fourcc_to_string(flags.fourcc));
 
@@ -65,6 +66,11 @@ int main(const int argc, char *argv[]) {
     args::ValueFlag outputDirFlag(parser, "dir", "Output directory, defaults to output/", {'o', "output"}, flags.outputDir);
 
     args::ValueFlag httpPortFlag(parser, "http-port", "HTTP server port", {'p', "http-port"}, flags.httpPort);
+
+    args::ValueFlag streamJpegQualityFlag(parser, "quality", "MJPEG streaming quality", {'q', "stream-quality"}, flags.jpegStreamQuality);
+    args::ValueFlag streamJpegWidthFlag(parser, "px", "MJPEG streaming width", {'W', "stream-width"}, flags.jpegStreamWidth);
+    args::ValueFlag streamJpegHeightFlag(parser, "px", "MJPEG streaming height", {'H', "stream-height"}, flags.jpegStreamHeight);
+    args::ValueFlag streamJpegFpsFlag(parser, "fps", "MJPEG streaming FPS", {"stream-fps"}, flags.jpegStreamFps);
 
     args::CompletionFlag completion(parser, {"complete"});
 
@@ -113,6 +119,10 @@ int main(const int argc, char *argv[]) {
     flags.outputDir = args::get(outputDirFlag);
 
     flags.httpPort = args::get(httpPortFlag);
+    flags.jpegStreamQuality = args::get(streamJpegQualityFlag);
+    flags.jpegStreamWidth = args::get(streamJpegWidthFlag);
+    flags.jpegStreamHeight = args::get(streamJpegHeightFlag);
+    flags.jpegStreamFps = args::get(streamJpegFpsFlag);
 
     if (enumerateOnly) {
         enumerate_camera_modes(flags.cameraId);
@@ -127,18 +137,21 @@ int main(const int argc, char *argv[]) {
     cv_cap_setup(&cap, flags);
 
     auto frameBuffer = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
+    auto frameBufferWebRtc = VideoBuffer<TimestampedFrame>(flags.bufferMaxSize);
     g_frameBuffer = &frameBuffer;
+    g_frameBufferWebRtc = &frameBufferWebRtc;
 
     // Start video recorder
     VideoRecordThread::begin(&frameBuffer, flags.outputDir, flags);
 
     // Start HTTP server
-    HttpServer::begin(flags);
+    HttpServer::begin(&frameBufferWebRtc, flags);
 
     std::signal(SIGINT, [](const int sig) {
         std::cout << "\n";
         spdlog::warn("SIGINT received");
         g_frameBuffer->shutdown();
+        g_frameBufferWebRtc->shutdown();
         VideoRecordThread::shutdown();
         HttpServer::stop();
         std::exit(sig);
@@ -163,6 +176,7 @@ int main(const int argc, char *argv[]) {
             spdlog::critical("frame size from camera {}x{} != expected {}x{}", frame.cols, frame.rows, flags.width,
                              flags.height);
             VideoRecordThread::shutdown();
+            WebRtcStreamThread::shutdown();
             HttpServer::stop();
             std::exit(1);
         }
@@ -180,7 +194,11 @@ int main(const int argc, char *argv[]) {
         frame_count++;
 
         if (!frameBuffer.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
-            spdlog::warn("buffer full, dropping frame #{}", frame_count);
+            spdlog::warn("record buffer full, dropping frame #{}", frame_count);
+        }
+
+        if (!frameBufferWebRtc.tryPush(TimestampedFrame{frame, std::chrono::system_clock::now().time_since_epoch()})) {
+            spdlog::warn("webrtc buffer full, dropping frame #{}", frame_count);
         }
 
         if (frame_count >= flags.rollingFpsFrameCount) {
@@ -207,6 +225,7 @@ int main(const int argc, char *argv[]) {
 
     // Cleanup
     VideoRecordThread::shutdown();
+    WebRtcStreamThread::shutdown();
     HttpServer::stop();
     return 0;
 }

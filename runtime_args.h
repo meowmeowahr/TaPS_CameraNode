@@ -27,6 +27,10 @@ struct RuntimeArgs {
     std::filesystem::path outputDir = "output/";
     std::string encoderArgs; // encoder-specific arguments like "quality:90" or "order:rgb"
     unsigned short httpPort = 8080; // HTTP server port
+    unsigned char jpegStreamQuality = 85;
+    unsigned short jpegStreamFps = 60;
+    unsigned long jpegStreamWidth = 640;
+    unsigned long jpegStreamHeight = 480;
 };
 
 #endif //TAPS_CAMERANODE_RUNTIME_ARGS_H
