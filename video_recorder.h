@@ -54,7 +54,6 @@ public:
         if (record == recording_) return;
         s_pendingCommand = record ? Command::Start : Command::Stop;
         s_cmdCv.notify_all();
-        s_cmdCv.wait(lock, [&] { return s_pendingCommand == Command::None; });
     }
 
     static bool isRecording() { return recording_; }
@@ -294,7 +293,7 @@ private:
 
         for (unsigned i = 0; i < numEncoders; ++i) {
             session->encoders.emplace_back([s = session.get(), i, encoderType]() {
-                pthread_setname_np(pthread_self(), std::format("encoder-{}", i).c_str());
+                pthread_setname_np(pthread_self(), std::format("encode-{}", i).c_str());
                 const std::vector params = {cv::IMWRITE_JPEG_QUALITY, s->jpegQuality};
                 while (const auto job = s->inboxes[i].pop()) {
                     Result r;
