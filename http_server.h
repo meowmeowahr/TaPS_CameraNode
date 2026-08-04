@@ -37,6 +37,7 @@ public:
 
         s_previewWidth = flags.jpegStreamWidth;
         s_previewHeight = flags.jpegStreamHeight;
+        s_previewFps = flags.jpegStreamFps;
         s_jpegQuality = flags.jpegStreamQuality;
 
         s_ws = std::make_unique<webserver>(
@@ -246,10 +247,13 @@ private:
 
     static inline int s_previewWidth = 640;
     static inline int s_previewHeight = 480;
+    static inline int s_previewFps = 15;
     static inline int s_jpegQuality = 70;
 
     static void encodeLoop() {
         pthread_setname_np(pthread_self(), "str_encode");
+        const auto interval = std::chrono::microseconds(1'000'000 / s_previewFps);
+        auto next = std::chrono::steady_clock::now();
 
         const std::vector<int> jpegParams = {cv::IMWRITE_JPEG_QUALITY, s_jpegQuality};
 
@@ -264,6 +268,9 @@ private:
 
             auto now = std::chrono::steady_clock::now();
             auto wallNow = std::chrono::system_clock::now();
+
+            if (now < next) continue; // simple FPS gate
+            next = now + interval;
 
             cv::resize(maybe->frame, resized,
                        cv::Size{s_previewWidth, s_previewHeight},
