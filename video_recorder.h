@@ -6,6 +6,7 @@
 #define TAPS_CAMERANODE_VIDEO_RECORDER_H
 
 #include <chrono>
+#include <functional>
 #include <thread>
 #include <vector>
 #include <deque>
@@ -64,6 +65,11 @@ public:
     }
 
     static RecorderState getState() { return state; }
+
+    static void setStateCallback(std::function<void(RecorderState)> cb) {
+        std::lock_guard lock(s_callbackMutex);
+        s_stateCallback = std::move(cb);
+    }
 
     static void shutdown() {
         // Make sure any active session is stopped and closed cleanly first.
@@ -395,9 +401,19 @@ private:
         session.output.flush();
     }
 
+    static void notifyStateChange(const RecorderState newState) {
+        state = newState;
+        std::function<void(RecorderState)> cb;
+        {
+            std::lock_guard lock(s_callbackMutex);
+            cb = s_stateCallback;
+        }
+        if (cb) cb(newState);
+    }
+
     static void stopSession(const std::unique_ptr<Session> &session) {
         if (!session) return;
-        state = RecorderState::Saving;
+        notifyStateChange(RecorderState::Saving);
 
         for (auto &inbox: session->inboxes) inbox.close();
         for (auto &encoder: session->encoders) encoder.join();
@@ -423,7 +439,7 @@ private:
                                                    s_encoderType, s_encoderArgs, s_numEncoders);
                     lock.lock();
                     session = std::move(newSession);
-                    state = session != nullptr ? RecorderState::Recording : RecorderState::Idle;
+                    notifyStateChange(session != nullptr ? RecorderState::Recording : RecorderState::Idle);
                     s_pendingCommand = Command::None;
                     s_cmdCv.notify_all();
                 } else if (s_pendingCommand == Command::Stop && session) {
@@ -431,7 +447,7 @@ private:
                     stopSession(session);
                     lock.lock();
                     session.reset();
-                    state = RecorderState::Idle;
+                    notifyStateChange(RecorderState::Idle);
                     s_pendingCommand = Command::None;
                     s_cmdCv.notify_all();
                 } else if (s_pendingCommand != Command::None) {
@@ -454,7 +470,7 @@ private:
                     stopSession(session);
                     lock.lock();
                     session.reset();
-                    state = RecorderState::Idle;
+                    notifyStateChange(RecorderState::Idle);
                 }
                 break;
             }
@@ -488,6 +504,9 @@ private:
     static inline std::condition_variable s_cmdCv;
     static inline auto s_pendingCommand = Command::None;
     static inline bool s_shuttingDown = false;
+
+    static inline std::mutex s_callbackMutex;
+    static inline std::function<void(RecorderState)> s_stateCallback;
 };
 
 #endif //TAPS_CAMERANODE_VIDEO_RECORDER_H

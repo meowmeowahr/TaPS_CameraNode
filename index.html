@@ -78,6 +78,18 @@
             border-color: rgba(239, 68, 68, 0.3);
         }
 
+        .badge.saving {
+            background-color: rgba(245, 158, 11, 0.15);
+            color: var(--warning);
+            border-color: rgba(245, 158, 11, 0.3);
+        }
+
+        .badge.offline {
+            background-color: rgba(148, 163, 184, 0.08);
+            color: #475569;
+            border-color: rgba(148, 163, 184, 0.15);
+        }
+
         .badge-dot {
             width: 8px;
             height: 8px;
@@ -89,10 +101,23 @@
             animation: pulse 1.5s infinite;
         }
 
+        .badge.saving .badge-dot {
+            animation: spin 1s linear infinite;
+            border-radius: 0;
+            width: 8px;
+            height: 8px;
+            clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+        }
+
         @keyframes pulse {
             0% { opacity: 1; }
             50% { opacity: 0.3; }
             100% { opacity: 1; }
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to   { transform: rotate(360deg); }
         }
 
         .stream-container {
@@ -295,33 +320,70 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
-        function checkStatus() {
-            fetch('/status')
-                .then(res => res.json())
-                .then(data => {
-                    const badge = document.getElementById('status-badge');
-                    const text = document.getElementById('status-text');
-                    const btnStart = document.getElementById('btn-start');
-                    const btnStop = document.getElementById('btn-stop');
+        // Apply a status payload (from SSE or legacy fetch) to the UI
+        function applyStatus(data) {
+            const badge   = document.getElementById('status-badge');
+            const text    = document.getElementById('status-text');
+            const btnStart = document.getElementById('btn-start');
+            const btnStop  = document.getElementById('btn-stop');
 
-                    if (data.recording) {
-                        badge.className = 'badge recording';
-                        text.textContent = 'RECORDING';
-                        btnStart.disabled = true;
-                        btnStop.disabled = false;
-                    } else {
-                        badge.className = 'badge';
-                        text.textContent = 'IDLE';
-                        btnStart.disabled = false;
-                        btnStop.disabled = true;
-                    }
-                })
-                .catch(() => {
-                    const badge = document.getElementById('status-badge');
-                    const text = document.getElementById('status-text');
-                    badge.className = 'badge';
-                    text.textContent = 'OFFLINE';
-                });
+            const state = data.state || (data.recording ? 'Recording' : 'Idle');
+
+            badge.className = 'badge';
+            switch (state) {
+                case 'Recording':
+                    badge.classList.add('recording');
+                    text.textContent = 'RECORDING';
+                    btnStart.disabled = true;
+                    btnStop.disabled  = false;
+                    break;
+                case 'Saving':
+                    badge.classList.add('saving');
+                    text.textContent = 'SAVING';
+                    btnStart.disabled = true;
+                    btnStop.disabled  = true;
+                    break;
+                default: // Idle
+                    text.textContent = 'IDLE';
+                    btnStart.disabled = false;
+                    btnStop.disabled  = true;
+                    break;
+            }
+
+            // Update disk info if included in the SSE payload
+            if (data.disk && !data.disk.error) {
+                applyDisk(data.disk);
+            }
+        }
+
+        function setOffline() {
+            const badge = document.getElementById('status-badge');
+            const text  = document.getElementById('status-text');
+            badge.className = 'badge offline';
+            text.textContent = 'OFFLINE';
+            document.getElementById('btn-start').disabled = true;
+            document.getElementById('btn-stop').disabled  = true;
+        }
+
+        function applyDisk(data) {
+            if (data.error) {
+                document.getElementById('disk-path').textContent = 'Error: ' + data.error;
+                return;
+            }
+            const pct = data.used_percent.toFixed(1);
+            const bar = document.getElementById('disk-bar');
+            bar.style.width = pct + '%';
+            if (pct > 90) {
+                bar.style.backgroundColor = 'var(--danger)';
+            } else if (pct > 75) {
+                bar.style.backgroundColor = 'var(--warning)';
+            } else {
+                bar.style.backgroundColor = 'var(--primary)';
+            }
+            document.getElementById('disk-used').textContent  = `${formatBytes(data.used_bytes)} (${pct}%)`;
+            document.getElementById('disk-free').textContent  = formatBytes(data.free_bytes);
+            document.getElementById('disk-total').textContent = formatBytes(data.total_bytes);
+            document.getElementById('disk-path').textContent  = `Path: ${data.path}`;
         }
 
         function setRecording(action) {
@@ -330,52 +392,47 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: action })
             })
-            .then(() => checkStatus())
-            .catch(err => alert('Failed to execution action: ' + err));
+            .catch(err => alert('Failed to execute action: ' + err));
         }
 
+        // Manual disk refresh button — still useful when offline or for a quick check
         function refreshDisk() {
             fetch('/disk')
                 .then(res => res.json())
-                .then(data => {
-                    if (data.error) {
-                        document.getElementById('disk-path').textContent = 'Error: ' + data.error;
-                        return;
-                    }
-
-                    const pct = data.used_percent.toFixed(1);
-                    const bar = document.getElementById('disk-bar');
-
-                    bar.style.width = pct + '%';
-
-                    if (pct > 90) {
-                        bar.style.backgroundColor = 'var(--danger)';
-                    } else if (pct > 75) {
-                        bar.style.backgroundColor = 'var(--warning)';
-                    } else {
-                        bar.style.backgroundColor = 'var(--primary)';
-                    }
-
-                    document.getElementById('disk-used').textContent = `${formatBytes(data.used_bytes)} (${pct}%)`;
-                    document.getElementById('disk-free').textContent = formatBytes(data.free_bytes);
-                    document.getElementById('disk-total').textContent = formatBytes(data.total_bytes);
-                    document.getElementById('disk-path').textContent = `Path: ${data.path}`;
-                })
-                .catch(err => {
+                .then(data => applyDisk(data))
+                .catch(() => {
                     document.getElementById('disk-path').textContent = 'Error fetching disk info';
                 });
         }
 
-        // Initialize and polling loops
+        // ----------------------------------------------------------------
+        //  SSE connection — replaces the setInterval polling loops
+        // ----------------------------------------------------------------
+        let sse = null;
+
+        function connectSse() {
+            if (sse) { sse.close(); }
+
+            sse = new EventSource('/events');
+
+            sse.addEventListener('status', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    applyStatus(data);
+                } catch (err) {
+                    console.error('SSE parse error:', err);
+                }
+            });
+
+            sse.onerror = () => {
+                setOffline();
+                // EventSource will automatically retry; no manual reconnect needed.
+            };
+        }
+
         window.onload = () => {
-            refreshDisk();
-            checkStatus();
-
-            // Poll recording status every 2 seconds
-            setInterval(checkStatus, 2000);
-
-            // Periodically refresh disk status every 30 seconds
-            setInterval(refreshDisk, 30000);
+            refreshDisk();   // show disk data immediately on first load
+            connectSse();    // start the SSE connection
         };
     </script>
 </body>

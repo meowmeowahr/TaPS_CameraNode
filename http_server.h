@@ -6,7 +6,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <memory>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
 #include <vector>
@@ -46,20 +49,45 @@ public:
         s_ws->register_path("/recording", std::make_unique<RecordingResource>());
         s_ws->register_path("/disk", std::make_unique<DiskResource>());
         s_ws->register_path("/stream", std::make_unique<StreamResource>());
+        s_ws->register_path("/events", std::make_unique<SseResource>());
         s_ws->register_path("/", std::make_unique<IndexResource>());
 
         // Start the frame → JPEG pump
         s_running = true;
         s_encodeThread = std::thread(encodeLoop);
 
+        // Start the SSE heartbeat thread (pushes state+disk every 5 s)
+        s_heartbeatThread = std::thread(heartbeatLoop);
+
+        // Wire recorder state-change callback so we push immediately on transition
+        VideoRecordThread::setStateCallback([](VideoRecordThread::RecorderState) {
+            broadcastStatus();
+        });
+
         s_ws->start(false); // non-blocking
         spdlog::info("HTTP server started on port {} (MJPEG at /stream)", flags.httpPort);
     }
 
     static void stop() {
+        VideoRecordThread::setStateCallback(nullptr);
+
         s_running = false;
+        s_heartbeatCv.notify_all();
+
         if (s_encodeThread.joinable())
             s_encodeThread.join();
+        if (s_heartbeatThread.joinable())
+            s_heartbeatThread.join();
+
+        {
+            std::lock_guard lock(s_sseMutex);
+            for (auto &client: s_sseClients) {
+                std::lock_guard cLock(client->mutex);
+                client->closed = true;
+                client->cv.notify_all();
+            }
+            s_sseClients.clear();
+        }
 
         if (s_ws) {
             s_ws->stop();
@@ -68,6 +96,71 @@ public:
     }
 
 private:
+    struct SseClient {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::queue<std::string> messages;
+        bool closed = false;
+    };
+
+    static inline std::mutex s_sseMutex;
+    static inline std::vector<std::shared_ptr<SseClient> > s_sseClients;
+
+    static std::string stateString(const VideoRecordThread::RecorderState s) {
+        using S = VideoRecordThread::RecorderState;
+        switch (s) {
+            case S::Idle: return "Idle";
+            case S::Recording: return "Recording";
+            case S::Saving: return "Saving";
+        }
+        return "Idle";
+    }
+
+    static json buildSsePayload() {
+        return json{
+            {"state", stateString(VideoRecordThread::getState())},
+            {"disk", diskUsageJson()}
+        };
+    }
+
+    static std::string makeSseFrame(const json &payload) {
+        return "event: status\ndata: " + payload.dump() + "\n\n";
+    }
+
+    static void broadcastStatus() {
+        const std::string frame = makeSseFrame(buildSsePayload());
+        std::lock_guard lock(s_sseMutex);
+        for (auto it = s_sseClients.begin(); it != s_sseClients.end();) {
+            auto &client = *it;
+            std::lock_guard cLock(client->mutex);
+            if (client->closed) {
+                it = s_sseClients.erase(it);
+            } else {
+                client->messages.push(frame);
+                client->cv.notify_all();
+                ++it;
+            }
+        }
+    }
+
+    static inline std::mutex s_heartbeatMutex;
+    static inline std::condition_variable s_heartbeatCv;
+    static inline std::thread s_heartbeatThread;
+
+    static void heartbeatLoop() {
+        pthread_setname_np(pthread_self(), "sse_heartbeat");
+        while (s_running) {
+            {
+                std::unique_lock lock(s_heartbeatMutex);
+                s_heartbeatCv.wait_for(lock, std::chrono::seconds(5),
+                                       [] { return !s_running.load(); });
+            }
+            if (!s_running) break;
+            broadcastStatus();
+        }
+        spdlog::info("SSE heartbeat thread exited");
+    }
+
     static inline std::mutex s_jpegMutex;
     static inline std::vector<uint8_t> s_latestJpeg;
     static inline std::atomic<uint64_t> s_jpegSequence{0};
@@ -139,9 +232,6 @@ private:
         spdlog::info("MJPEG encode thread exited");
     }
 
-    // ------------------------------------------------------------------
-    //  Logging helpers (unchanged)
-    // ------------------------------------------------------------------
     static void custom_access_log(const std::string &log_entry) {
         spdlog::debug("http request: {}", log_entry);
     }
@@ -150,9 +240,6 @@ private:
         spdlog::error("http error: {}", log_entry);
     }
 
-    // ------------------------------------------------------------------
-    //  JSON helpers (unchanged)
-    // ------------------------------------------------------------------
     static json diskUsageJson() {
         struct statvfs stat{};
         if (statvfs(s_dataPath.c_str(), &stat) != 0) {
@@ -167,8 +254,9 @@ private:
             {"used_bytes", usedBytes},
             {"free_bytes", freeBytes},
             {
-                "used_percent",
-                totalBytes ? 100.0 * (static_cast<double>(usedBytes) / static_cast<double>(totalBytes)) : 0.0
+                "used_percent", totalBytes
+                                    ? 100.0 * (static_cast<double>(usedBytes) / static_cast<double>(totalBytes))
+                                    : 0.0
             }
         };
     }
@@ -187,9 +275,6 @@ private:
         return jsonResponse(json{{"error", message}}, 400);
     }
 
-    // ------------------------------------------------------------------
-    //  Existing resources (unchanged)
-    // ------------------------------------------------------------------
     class StatusResource : public http_resource {
     public:
         http_response render_get(const http_request &) override {
@@ -245,6 +330,55 @@ private:
         http_response render_get(const http_request &) override {
             return http_response::file("index.html")
                     .with_header("Content-Type", "text/html");
+        }
+    };
+
+    class SseResource : public http_resource {
+    public:
+        http_response render_get(const http_request &) override {
+            // Create a slot for this client
+            auto client = std::make_shared<SseClient>();
+            {
+                std::lock_guard lock(s_sseMutex);
+                s_sseClients.push_back(client);
+            }
+
+            // Seed with the current status immediately so the browser doesn't
+            // have to wait for the next heartbeat or state change.
+            {
+                std::lock_guard cLock(client->mutex);
+                client->messages.push(makeSseFrame(buildSsePayload()));
+            }
+
+            auto producer = [client](std::uint64_t /*seq*/, char *buf, const std::size_t max) -> ssize_t {
+                std::unique_lock lock(client->mutex);
+
+                // Block until there is a message to send or the connection is closed
+                client->cv.wait(lock, [&] {
+                    return client->closed || !client->messages.empty();
+                });
+
+                if (client->closed && client->messages.empty()) {
+                    return -1; // EOF -- browser EventSource will auto-reconnect
+                }
+
+                // Serve the front message, potentially in multiple chunks
+                std::string &msg = client->messages.front();
+                const std::size_t n = std::min(msg.size(), max);
+                std::memcpy(buf, msg.data(), n);
+                if (n == msg.size()) {
+                    client->messages.pop();
+                } else {
+                    msg.erase(0, n);
+                }
+                return static_cast<ssize_t>(n);
+            };
+
+            return http_response::deferred(std::move(producer))
+                    .with_header("Content-Type", "text/event-stream")
+                    .with_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    .with_header("Connection", "keep-alive")
+                    .with_header("X-Accel-Buffering", "no"); // disable nginx proxy buffering
         }
     };
 
