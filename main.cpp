@@ -20,7 +20,6 @@
 #include "video_queue.h"
 #include "video_recorder.h"
 #include "http_server.h"
-#include "webrtc_substream.h"
 
 static VideoBuffer<TimestampedFrame> *g_frameBuffer = nullptr;
 static VideoBuffer<TimestampedFrame> *g_frameBufferWebRtc = nullptr;
@@ -176,7 +175,6 @@ int main(const int argc, char *argv[]) {
             spdlog::critical("frame size from camera {}x{} != expected {}x{}", frame.cols, frame.rows, flags.width,
                              flags.height);
             VideoRecordThread::shutdown();
-            WebRtcStreamThread::shutdown();
             HttpServer::stop();
             std::exit(1);
         }
@@ -225,7 +223,6 @@ int main(const int argc, char *argv[]) {
 
     // Cleanup
     VideoRecordThread::shutdown();
-    WebRtcStreamThread::shutdown();
     HttpServer::stop();
     return 0;
 }
