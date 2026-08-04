@@ -107,7 +107,7 @@ private:
             std::tm tm{};
             localtime_r(&wallTime, &tm);
 
-            std::string timeStr = std::format("{:%Y-%m-%d %F}", wallNow);
+            std::string timeStr = std::format("{:%Y-%m-%d %H:%M:%S}", wallNow);
 
             const double scale = static_cast<double>(resized.cols) / 360.0;
             const double fontScale = std::clamp(scale, 0.5, 4.0);
