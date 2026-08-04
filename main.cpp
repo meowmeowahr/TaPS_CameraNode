@@ -236,10 +236,9 @@ int main(const int argc, char *argv[]) {
 
             delta_times.erase(delta_times.begin());
         }
-
-        // Cleanup
-        VideoRecordThread::shutdown();
-        HttpServer::stop();
-        return 0;
     }
+    // Cleanup
+    VideoRecordThread::shutdown();
+    HttpServer::stop();
+    return 0;
 }
