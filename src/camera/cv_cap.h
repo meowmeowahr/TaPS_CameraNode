@@ -8,7 +8,7 @@
 #include <opencv2/videoio.hpp>
 #include <spdlog/spdlog.h>
 
-#include "runtime_args.h"
+#include "../runtime_args.h"
 
 inline int cv_cap_setup(cv::VideoCapture *cap, RuntimeArgs flags) {
     cap->open(flags.cameraId, cv::CAP_V4L2);

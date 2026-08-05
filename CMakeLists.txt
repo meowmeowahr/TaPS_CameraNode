@@ -30,16 +30,21 @@ find_package(OpenCV 5.0 REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(LibHttpServer REQUIRED)
 
-add_executable(TaPS_CameraNode main.cpp
-        cv_logger.cpp
-        cv_logger.h
-        camera_enumeration.cpp
-        camera_enumeration.h
-        fourcc.h
-        runtime_args.h
-        cv_cap.h
-        video_queue.h
-        video_recorder.h)
+add_executable(
+        TaPS_CameraNode
+        src/main.cpp
+        src/camera/cv_logger.cpp
+        src/camera/cv_logger.h
+        src/camera/camera_enumeration.cpp
+        src/camera/camera_enumeration.h
+        src/camera/fourcc.h
+        src/runtime_args.h
+        src/camera/cv_cap.h
+        src/video_queue.h
+        src/video_recorder.h
+        src/taps_reader/taps_reader.cpp
+        src/taps_reader/taps_reader.h
+)
 
 target_link_libraries(TaPS_CameraNode PRIVATE ${OpenCV_LIBS} spdlog::spdlog taywee::args httpserver nlohmann_json::nlohmann_json)
 target_include_directories(TaPS_CameraNode PRIVATE

@@ -12,14 +12,14 @@
 #include <vector>
 #include <stdexcept>
 
-#include "camera_enumeration.h"
-#include "cv_cap.h"
-#include "cv_logger.h"
-#include "fourcc.h"
+#include "camera/camera_enumeration.h"
+#include "camera/cv_cap.h"
+#include "camera/cv_logger.h"
+#include "camera/fourcc.h"
 #include "runtime_args.h"
 #include "video_queue.h"
 #include "video_recorder.h"
-#include "http_server.h"
+#include "webserver/http_server.h"
 
 static VideoBuffer<TimestampedFrame> *g_frameBuffer = nullptr;
 static VideoBuffer<TimestampedFrame> *g_frameBufferStream = nullptr;
@@ -62,13 +62,17 @@ int main(const int argc, char *argv[]) {
     args::ValueFlag encoderThreadsFlag(parser, "threads", "Number of threads for the encoder", {'j', "encoder-threads"},
                                        flags.encoderThreads);
 
-    args::ValueFlag outputDirFlag(parser, "dir", "Output directory, defaults to output/", {'o', "output"}, flags.outputDir);
+    args::ValueFlag outputDirFlag(parser, "dir", "Output directory, defaults to output/", {'o', "output"},
+                                  flags.outputDir);
 
     args::ValueFlag httpPortFlag(parser, "http-port", "HTTP server port", {'p', "http-port"}, flags.httpPort);
 
-    args::ValueFlag streamJpegQualityFlag(parser, "quality", "MJPEG streaming quality", {'q', "stream-quality"}, flags.jpegStreamQuality);
-    args::ValueFlag streamJpegWidthFlag(parser, "px", "MJPEG streaming width", {'W', "stream-width"}, flags.jpegStreamWidth);
-    args::ValueFlag streamJpegHeightFlag(parser, "px", "MJPEG streaming height", {'H', "stream-height"}, flags.jpegStreamHeight);
+    args::ValueFlag streamJpegQualityFlag(parser, "quality", "MJPEG streaming quality", {'q', "stream-quality"},
+                                          flags.jpegStreamQuality);
+    args::ValueFlag streamJpegWidthFlag(parser, "px", "MJPEG streaming width", {'W', "stream-width"},
+                                        flags.jpegStreamWidth);
+    args::ValueFlag streamJpegHeightFlag(parser, "px", "MJPEG streaming height", {'H', "stream-height"},
+                                         flags.jpegStreamHeight);
     args::ValueFlag streamJpegFpsFlag(parser, "fps", "MJPEG streaming FPS", {"stream-fps"}, flags.jpegStreamFps);
 
     args::CompletionFlag completion(parser, {"complete"});

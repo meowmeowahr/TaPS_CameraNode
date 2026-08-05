@@ -22,9 +22,10 @@
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 
-#include "runtime_args.h"
-#include "video_recorder.h"   // TimestampedFrame + VideoBuffer
-#include "video_queue.h"
+#include "../runtime_args.h"
+#include "../video_recorder.h"
+#include "../video_queue.h"
+#include "../taps_reader/taps_reader.h"
 
 using namespace httpserver;
 using json = nlohmann::json;
@@ -51,6 +52,7 @@ public:
         s_ws->register_path("/disk", std::make_unique<DiskResource>());
         s_ws->register_path("/stream", std::make_unique<StreamResource>());
         s_ws->register_path("/events", std::make_unique<SseResource>());
+        s_ws->register_prefix("/files", std::make_unique<FileBrowseResource>(flags.outputDir, "/files"));
         s_ws->register_path("/", std::make_unique<IndexResource>());
 
         // Start the frame → JPEG pump
@@ -408,8 +410,105 @@ private:
     class IndexResource : public http_resource {
     public:
         http_response render_get(const http_request &) override {
-            return http_response::file("index.html")
+            return http_response::file("templates/index.html")
                     .with_header("Content-Type", "text/html");
+        }
+    };
+
+    class FileBrowseResource : public http_resource {
+    public:
+        FileBrowseResource(fs::path root, std::string mountPrefix)
+            : m_root(std::move(root)), m_mountPrefix(std::move(mountPrefix)) {
+        }
+
+        http_response render_get(const http_request &req) override {
+            fs::path target;
+            if (!resolve(req, target)) return http_response::string("Forbidden").with_status(403);
+
+            std::error_code ec;
+            if (!fs::exists(target, ec)) {
+                return http_response::string("Not found").with_status(404);
+            }
+
+            if (fs::is_directory(target, ec)) {
+                std::ostringstream out;
+                out << "[";
+                bool first = true;
+                for (const auto &entry: fs::directory_iterator(target, ec)) {
+                    if (!first) out << ",";
+                    first = false;
+                    out << "{\"name\":\"" << entry.path().filename().string() << "\","
+                            << "\"is_dir\":" << (entry.is_directory() ? "true" : "false") << "}";
+                }
+                out << "]";
+                return http_response::string(out.str(), "application/json");
+            }
+
+            if (req.get_args().contains(std::string_view("thumb"))) {
+                auto reader = TaPS_Reader(target);
+                auto resp = http_response::string(std::format("request for thumbnail {}, encoding {}, width {}, height {}, target fps {}", target.c_str(),
+                              static_cast<int>(reader.get_encoding()), reader.get_frame_width(), reader.get_frame_height(), reader.get_target_fps()));
+                reader.close();
+                return resp;
+            }
+
+            return http_response::string(target.string(), "application/octet-stream");
+        }
+
+        http_response render_delete(const http_request &req) override {
+            fs::path target;
+            if (!resolve(req, target)) return http_response::string("Forbidden").with_status(403);
+
+            std::error_code ec;
+            if (!fs::exists(target, ec)) {
+                return http_response::string("Not found").with_status(404);
+            }
+            if (fs::equivalent(target, m_root, ec)) return http_response::string("Forbidden").with_status(403);
+            // don't nuke the root
+
+            if (const bool removed = fs::remove_all(target, ec) > 0 && !ec; !removed) {
+                return http_response::string("Delete failed").with_status(500);
+            }
+            return http_response::empty();
+        }
+
+    private:
+        fs::path m_root;
+        std::string m_mountPrefix; // e.g. "/files"
+
+        // Extracts everything after the mount prefix from req.get_path(), then
+        // resolves it against m_root, rejecting any attempt to escape it.
+        bool resolve(const http_request &req, fs::path &out) const {
+            const auto fullPath = req.get_path(); // e.g. "/files/sub/dir/file.txt"
+
+            std::string rel;
+            if (fullPath.size() > m_mountPrefix.size() &&
+                fullPath.compare(0, m_mountPrefix.size(), m_mountPrefix) == 0) {
+                rel = fullPath.substr(m_mountPrefix.size());
+            }
+            if (!rel.empty() && rel.front() == '/') rel.erase(0, 1);
+
+            fs::path candidate = m_root / rel;
+
+            std::error_code ec;
+            fs::path canonicalRoot = fs::weakly_canonical(m_root, ec);
+            fs::path canonicalTarget = fs::weakly_canonical(candidate, ec);
+
+            auto [rootEnd, targetIt] = std::mismatch(
+                canonicalRoot.begin(), canonicalRoot.end(), canonicalTarget.begin(), canonicalTarget.end());
+            if (rootEnd != canonicalRoot.end()) return false; // escaped the root
+
+            out = canonicalTarget;
+            return true;
+        }
+
+        bool isWithinRoot(const fs::path &p) const {
+            std::error_code ec;
+            fs::path canonicalRoot = fs::weakly_canonical(m_root, ec);
+            fs::path canonicalTarget = fs::weakly_canonical(p, ec);
+            auto [rootEnd, targetIt] = std::mismatch(
+                canonicalRoot.begin(), canonicalRoot.end(), canonicalTarget.begin(), canonicalTarget.end());
+            return rootEnd == canonicalRoot.end();
         }
     };
 
