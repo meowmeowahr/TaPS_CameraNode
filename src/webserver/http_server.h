@@ -446,8 +446,11 @@ private:
 
             if (req.get_args().contains(std::string_view("thumb"))) {
                 auto reader = TaPS_Reader(target);
-                auto resp = http_response::string(std::format("request for thumbnail {}, encoding {}, width {}, height {}, target fps {}", target.c_str(),
-                              static_cast<int>(reader.get_encoding()), reader.get_frame_width(), reader.get_frame_height(), reader.get_target_fps()));
+                auto [encoding, width, height, target_fps, encoder_args, frame_count] = reader.get_header();
+                auto resp = http_response::string(std::format(
+                    "request for thumbnail {}, encoding {}, width {}, height {}, target fps {}, encoder args {}, frames {}",
+                    target.c_str(),
+                    static_cast<int>(encoding), width, height, target_fps, encoder_args, frame_count));
                 reader.close();
                 return resp;
             }
