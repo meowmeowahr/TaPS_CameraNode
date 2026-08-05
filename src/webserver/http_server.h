@@ -447,12 +447,14 @@ private:
             if (req.get_args().contains(std::string_view("thumb"))) {
                 auto reader = TaPS_Reader(target);
                 auto [encoding, width, height, target_fps, encoder_args, frame_count] = reader.get_header();
-                auto resp = http_response::string(std::format(
+                spdlog::debug(std::format(
                     "request for thumbnail {}, encoding {}, width {}, height {}, target fps {}, encoder args {}, frames {}",
                     target.c_str(),
                     static_cast<int>(encoding), width, height, target_fps, encoder_args, frame_count));
+                auto frame = TaPS_Reader::Frame{};
+                reader.read_next_frame(frame);
                 reader.close();
-                return resp;
+                return http_response::string(std::string(frame.data.begin(), frame.data.end()));
             }
 
             return http_response::string(target.string(), "application/octet-stream");
